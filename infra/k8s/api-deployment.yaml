@@ -1,0 +1,38 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: softerplease-api
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: softerplease-api
+  template:
+    metadata:
+      labels:
+        app: softerplease-api
+    spec:
+      containers:
+        - name: api
+          image: softerplease/api:latest
+          ports:
+            - containerPort: 8000
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8000
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8000
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: softerplease-api
+spec:
+  selector:
+    app: softerplease-api
+  ports:
+    - port: 8000
+      targetPort: 8000
