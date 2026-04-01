@@ -44,6 +44,7 @@ PYTHONPATH=backend pytest -q backend/tests
 - 移动端：`mobile/README.md` / `mobile/flutter_app/`
 
 
+
 ## GitHub Pages 发布
 仓库已包含 `.github/workflows/pages.yml`：
 - push 到 `main/work` 或手动触发后自动部署 `web/` 到 GitHub Pages
@@ -53,9 +54,3 @@ PYTHONPATH=backend pytest -q backend/tests
 - 自动构建 Flutter Android APK
 - 构建产物在 Actions Artifacts 下载
 
-
-## GitHub Pages 404 排错
-如果 Actions 报 `Failed to create deployment (404)`：
-1. 打开仓库 `Settings -> Pages` 并启用 Pages
-2. Source 选择 `GitHub Actions`
-3. 确保 workflow 从 `main` 分支触发

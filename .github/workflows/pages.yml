@@ -3,7 +3,7 @@ name: deploy-pages
 on:
   workflow_dispatch:
   push:
-    branches: ["main"]
+    branches: ["main", "work"]
 
 permissions:
   contents: read
@@ -15,27 +15,26 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  deploy:
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
+  build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      - name: Setup Pages
-        uses: actions/configure-pages@v5
-
       - name: Prepare static site
         run: |
           mkdir -p dist
           cp -r web/* dist/
-
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:
           path: dist
 
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
