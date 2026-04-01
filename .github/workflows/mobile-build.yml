@@ -1,33 +1,65 @@
 name: mobile-build
 
 on:
-  workflow_dispatch:
   push:
-    branches: ["main", "work"]
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
-  android-apk:
+  build-sign-release:
     runs-on: ubuntu-latest
     defaults:
       run:
         working-directory: mobile/flutter_app
-    steps:
-      - uses: actions/checkout@v4
-      - uses: subosito/flutter-action@v2
-        with:
-          channel: stable
 
-      - name: Generate Android host project (if missing)
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: "3.22.2"
+          channel: stable
+          cache: true
+
+      - name: Generate Android host project
         run: flutter create --platforms=android --project-name softerplease_mobile .
 
       - name: Flutter pub get
         run: flutter pub get
 
-      - name: Build APK
+      - name: Build signed APK
         run: flutter build apk --release
 
-      - name: Upload APK artifact
+      - name: Locate APK
+        id: apk
+        run: |
+          APK_PATH="$(pwd)/build/app/outputs/flutter-apk/app-release.apk"
+          test -f "$APK_PATH"
+          echo "path=$APK_PATH" >> "$GITHUB_OUTPUT"
+
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: softerplease-android-apk
-          path: mobile/flutter_app/build/app/outputs/flutter-apk/app-release.apk
+          path: ${{ steps.apk.outputs.path }}
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Publish to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ steps.apk.outputs.path }}
+          generate_release_notes: true
