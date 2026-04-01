@@ -83,3 +83,13 @@ def test_range_report_validates_datetime():
     family_id = client.post('/v1/families', json={'name': '示例家庭'}, headers=auth(owner)).json()['family_id']
     res = client.get(f'/v1/reports/family/{family_id}/range?start=bad&end=bad2', headers=auth(owner))
     assert res.status_code == 400
+
+
+def test_system_endpoints():
+    client = TestClient(app)
+    assert client.get('/health').status_code == 200
+    assert client.get('/healthz').status_code == 200
+    assert client.get('/readyz').status_code == 200
+    info = client.get('/v1/system/info')
+    assert info.status_code == 200
+    assert 'version' in info.json()

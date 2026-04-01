@@ -59,3 +59,11 @@ uvicorn backend.app.main:app --reload --port 8000
 ```bash
 PYTHONPATH=backend pytest -q backend/tests
 ```
+
+
+## 部署与宣发资料
+- 部署手册：`docs/deploy/DEPLOYMENT.md`
+- 运维 Runbook：`docs/ops/RUNBOOK.md`
+- 宣发海报文案：`docs/marketing/poster_copy.md`
+- 宣发计划：`docs/marketing/campaign_plan.md`
+- 移动端开发说明：`mobile/README.md`

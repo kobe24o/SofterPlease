@@ -13,7 +13,9 @@ from sqlalchemy.orm import Session
 from .db import Base, SessionLocal, engine
 from .models import EmotionEvent, Family, FamilyMember, FeedbackEvent, Session as SessionModel, User
 
-app = FastAPI(title="SofterPlease Phase-2 API", version="0.7.0")
+APP_VERSION = "0.8.0"
+
+app = FastAPI(title="SofterPlease Phase-2 API", version=APP_VERSION)
 
 app.add_middleware(
     CORSMiddleware,
@@ -186,6 +188,22 @@ def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
+
+
+@app.get("/healthz")
+def healthz() -> dict[str, str]:
+    return {"status": "ok"}
+
+
+@app.get("/readyz")
+def readyz(db: Session = Depends(get_db)) -> dict[str, str]:
+    db.execute(select(1))
+    return {"status": "ready"}
+
+
+@app.get("/v1/system/info")
+def system_info() -> dict[str, str]:
+    return {"version": APP_VERSION, "server_time": now_utc().isoformat()}
 @app.post("/v1/users", response_model=UserCreateResponse)
 def create_user(payload: UserCreateRequest, db: Session = Depends(get_db)) -> UserCreateResponse:
     user_id = str(uuid.uuid4())
