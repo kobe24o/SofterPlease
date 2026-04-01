@@ -3,44 +3,387 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>SofterPlease - Phase 1</title>
+    <title>SofterPlease - 家庭情绪助手</title>
     <link rel="stylesheet" href="./style.css" />
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
   </head>
   <body>
-    <main class="container">
-      <h1>SofterPlease 实时反馈 Demo</h1>
-      <p>输入模拟 anger_score（0~1），观察实时反馈、事件列表与统计曲线数据。</p>
+    <div id="app">
+      <!-- 登录页面 -->
+      <div id="loginPage" class="page">
+        <div class="login-container">
+          <div class="logo">
+            <h1>SofterPlease</h1>
+            <p>让家庭沟通更温柔</p>
+          </div>
+          <div class="login-form">
+            <input type="text" id="nicknameInput" placeholder="输入您的昵称" />
+            <button id="createUserBtn">开始使用</button>
+          </div>
+        </div>
+      </div>
 
-      <section class="card">
-        <h2>会话控制</h2>
-        <button id="startBtn">开始会话</button>
-        <button id="endBtn" disabled>结束会话</button>
-        <p id="sessionText">当前会话：未开始</p>
-      </section>
+      <!-- 主应用页面 -->
+      <div id="mainPage" class="page hidden">
+        <!-- 侧边栏 -->
+        <aside class="sidebar">
+          <div class="sidebar-header">
+            <h2>SofterPlease</h2>
+          </div>
+          <nav class="sidebar-nav">
+            <a href="#" class="nav-item active" data-page="dashboard">
+              <span class="icon">📊</span>
+              <span>概览</span>
+            </a>
+            <a href="#" class="nav-item" data-page="realtime">
+              <span class="icon">🎙️</span>
+              <span>实时监测</span>
+            </a>
+            <a href="#" class="nav-item" data-page="reports">
+              <span class="icon">📈</span>
+              <span>统计报告</span>
+            </a>
+            <a href="#" class="nav-item" data-page="goals">
+              <span class="icon">🎯</span>
+              <span>改善目标</span>
+            </a>
+            <a href="#" class="nav-item" data-page="family">
+              <span class="icon">👨‍👩‍👧‍👦</span>
+              <span>家庭成员</span>
+            </a>
+            <a href="#" class="nav-item" data-page="settings">
+              <span class="icon">⚙️</span>
+              <span>设置</span>
+            </a>
+          </nav>
+          <div class="sidebar-footer">
+            <div class="user-info">
+              <span id="currentUserName">用户</span>
+              <button id="logoutBtn" class="btn-small">退出</button>
+            </div>
+          </div>
+        </aside>
 
-      <section class="card">
-        <h2>实时输入</h2>
-        <label>speaker_id <input id="speakerInput" value="member_a" /></label>
-        <label>transcript <input id="textInput" value="我现在有点着急" /></label>
-        <label>anger_score <input id="scoreInput" type="number" min="0" max="1" step="0.01" value="0.65" /></label>
-        <button id="sendBtn" disabled>发送实时样本</button>
-        <button id="acceptBtn" disabled>标记已采纳建议</button>
-      </section>
+        <!-- 主内容区 -->
+        <main class="main-content">
+          <!-- 概览页面 -->
+          <div id="dashboardPage" class="content-page">
+            <header class="page-header">
+              <h1>今日概览</h1>
+              <div class="date-selector">
+                <input type="date" id="dashboardDate" />
+              </div>
+            </header>
 
-      <section class="card">
-        <h2>反馈</h2>
-        <pre id="feedback"></pre>
-      </section>
+            <div class="stats-grid">
+              <div class="stat-card">
+                <div class="stat-icon">😊</div>
+                <div class="stat-content">
+                  <h3>今日情绪指数</h3>
+                  <p class="stat-value" id="todayEmotionScore">--</p>
+                  <span class="stat-trend" id="emotionTrend">--</span>
+                </div>
+              </div>
+              <div class="stat-card">
+                <div class="stat-icon">🗣️</div>
+                <div class="stat-content">
+                  <h3>对话次数</h3>
+                  <p class="stat-value" id="todaySessions">--</p>
+                  <span class="stat-label">次会话</span>
+                </div>
+              </div>
+              <div class="stat-card">
+                <div class="stat-icon">⏱️</div>
+                <div class="stat-content">
+                  <h3>监测时长</h3>
+                  <p class="stat-value" id="todayDuration">--</p>
+                  <span class="stat-label">分钟</span>
+                </div>
+              </div>
+              <div class="stat-card">
+                <div class="stat-icon">✅</div>
+                <div class="stat-content">
+                  <h3>反馈采纳率</h3>
+                  <p class="stat-value" id="feedbackRate">--</p>
+                  <span class="stat-trend positive">改善中</span>
+                </div>
+              </div>
+            </div>
 
-      <section class="card">
-        <h2>统计与事件</h2>
-        <button id="reportBtn" disabled>拉取日报</button>
-        <button id="eventsBtn" disabled>拉取事件</button>
-        <button id="timeseriesBtn" disabled>拉取曲线</button>
-        <button id="effectBtn" disabled>拉取采纳率</button>
-        <pre id="report"></pre>
-      </section>
-    </main>
+            <div class="charts-row">
+              <div class="chart-card">
+                <h3>情绪趋势</h3>
+                <canvas id="emotionTrendChart"></canvas>
+              </div>
+              <div class="chart-card">
+                <h3>情绪分布</h3>
+                <canvas id="emotionDistributionChart"></canvas>
+              </div>
+            </div>
+
+            <div class="recent-events">
+              <h3>最近事件</h3>
+              <div id="recentEventsList" class="events-list">
+                <!-- 动态生成 -->
+              </div>
+            </div>
+          </div>
+
+          <!-- 实时监测页面 -->
+          <div id="realtimePage" class="content-page hidden">
+            <header class="page-header">
+              <h1>实时情绪监测</h1>
+              <div class="session-controls">
+                <button id="startSessionBtn" class="btn-primary">开始会话</button>
+                <button id="pauseSessionBtn" class="btn-secondary hidden">暂停</button>
+                <button id="endSessionBtn" class="btn-danger hidden">结束</button>
+              </div>
+            </header>
+
+            <div class="realtime-container">
+              <div class="emotion-meter">
+                <div class="meter-container">
+                  <svg viewBox="0 0 200 120" class="gauge">
+                    <path d="M 20 100 A 80 80 0 0 1 180 100" fill="none" stroke="#e0e0e0" stroke-width="20" />
+                    <path id="gaugeFill" d="M 20 100 A 80 80 0 0 1 20 100" fill="none" stroke="#4CAF50" stroke-width="20" />
+                  </svg>
+                  <div class="gauge-value">
+                    <span id="currentEmotionValue">0.0</span>
+                    <small>情绪指数</small>
+                  </div>
+                </div>
+                <div class="emotion-status" id="emotionStatus">
+                  <span class="status-icon">😊</span>
+                  <span class="status-text">平静</span>
+                </div>
+              </div>
+
+              <div class="realtime-feedback">
+                <h3>实时反馈</h3>
+                <div id="feedbackDisplay" class="feedback-display">
+                  <p class="feedback-placeholder">开始会话后将显示反馈</p>
+                </div>
+                <div id="feedbackActions" class="feedback-actions hidden">
+                  <button id="acceptFeedbackBtn" class="btn-success">已采纳</button>
+                  <button id="ignoreFeedbackBtn" class="btn-secondary">忽略</button>
+                </div>
+              </div>
+
+              <div class="realtime-chart">
+                <h3>实时情绪曲线</h3>
+                <canvas id="realtimeChart"></canvas>
+              </div>
+            </div>
+
+            <div class="simulation-controls">
+              <h4>模拟测试</h4>
+              <div class="simulation-inputs">
+                <label>
+                  说话人:
+                  <select id="simSpeaker">
+                    <option value="member_a">成员A</option>
+                    <option value="member_b">成员B</option>
+                    <option value="member_c">成员C</option>
+                  </select>
+                </label>
+                <label>
+                  情绪分数:
+                  <input type="range" id="simAngerScore" min="0" max="1" step="0.01" value="0.3" />
+                  <span id="simAngerValue">0.3</span>
+                </label>
+                <label>
+                  文本:
+                  <input type="text" id="simTranscript" placeholder="输入模拟文本" />
+                </label>
+                <button id="sendSimBtn">发送模拟数据</button>
+              </div>
+            </div>
+          </div>
+
+          <!-- 统计报告页面 -->
+          <div id="reportsPage" class="content-page hidden">
+            <header class="page-header">
+              <h1>统计报告</h1>
+              <div class="report-filters">
+                <select id="reportPeriod">
+                  <option value="7">最近7天</option>
+                  <option value="30">最近30天</option>
+                  <option value="90">最近3个月</option>
+                </select>
+                <select id="reportMember">
+                  <option value="all">所有成员</option>
+                </select>
+              </div>
+            </header>
+
+            <div class="report-summary">
+              <div class="summary-card">
+                <h4>平均情绪指数</h4>
+                <p class="summary-value" id="reportAvgEmotion">--</p>
+              </div>
+              <div class="summary-card">
+                <h4>情绪波动次数</h4>
+                <p class="summary-value" id="reportHighEmotions">--</p>
+              </div>
+              <div class="summary-card">
+                <h4>改善趋势</h4>
+                <p class="summary-value" id="reportTrend">--</p>
+              </div>
+            </div>
+
+            <div class="chart-card full-width">
+              <h3>情绪趋势分析</h3>
+              <canvas id="reportTrendChart"></canvas>
+            </div>
+
+            <div class="charts-row">
+              <div class="chart-card">
+                <h3>时段分布</h3>
+                <canvas id="hourlyDistributionChart"></canvas>
+              </div>
+              <div class="chart-card">
+                <h3>成员对比</h3>
+                <canvas id="memberComparisonChart"></canvas>
+              </div>
+            </div>
+          </div>
+
+          <!-- 改善目标页面 -->
+          <div id="goalsPage" class="content-page hidden">
+            <header class="page-header">
+              <h1>改善目标</h1>
+              <button id="createGoalBtn" class="btn-primary">新建目标</button>
+            </header>
+
+            <div id="goalsList" class="goals-list">
+              <!-- 动态生成 -->
+            </div>
+          </div>
+
+          <!-- 家庭成员页面 -->
+          <div id="familyPage" class="content-page hidden">
+            <header class="page-header">
+              <h1>家庭成员</h1>
+              <button id="inviteMemberBtn" class="btn-primary">邀请成员</button>
+            </header>
+
+            <div id="familyMembersList" class="members-list">
+              <!-- 动态生成 -->
+            </div>
+
+            <div class="invite-section">
+              <h3>邀请码</h3>
+              <div class="invite-code-display">
+                <code id="familyInviteCode">----</code>
+                <button id="copyInviteCodeBtn" class="btn-small">复制</button>
+              </div>
+              <p class="invite-hint">分享此邀请码给家人，让他们加入</p>
+            </div>
+          </div>
+
+          <!-- 设置页面 -->
+          <div id="settingsPage" class="content-page hidden">
+            <header class="page-header">
+              <h1>设置</h1>
+            </header>
+
+            <div class="settings-section">
+              <h3>通知设置</h3>
+              <div class="setting-item">
+                <label>
+                  <input type="checkbox" id="enableNotifications" checked />
+                  启用通知
+                </label>
+              </div>
+              <div class="setting-item">
+                <label>
+                  <input type="checkbox" id="enableDailySummary" checked />
+                  每日总结
+                </label>
+              </div>
+            </div>
+
+            <div class="settings-section">
+              <h3>反馈设置</h3>
+              <div class="setting-item">
+                <label>反馈频率</label>
+                <select id="feedbackFrequency">
+                  <option value="low">低 - 仅在情绪高涨时</option>
+                  <option value="normal" selected>正常</option>
+                  <option value="high">高 - 频繁提醒</option>
+                </select>
+              </div>
+              <div class="setting-item">
+                <label>首选策略</label>
+                <select id="preferredStrategy">
+                  <option value="breathing">深呼吸</option>
+                  <option value="counting">数数</option>
+                  <option value="pausing">暂停</option>
+                  <option value="default" selected>自动选择</option>
+                </select>
+              </div>
+            </div>
+
+            <div class="settings-section">
+              <h3>数据管理</h3>
+              <button id="exportDataBtn" class="btn-secondary">导出数据</button>
+              <button id="clearDataBtn" class="btn-danger">清除所有数据</button>
+            </div>
+          </div>
+        </main>
+      </div>
+
+      <!-- 创建目标弹窗 -->
+      <div id="createGoalModal" class="modal hidden">
+        <div class="modal-content">
+          <h3>新建改善目标</h3>
+          <form id="createGoalForm">
+            <div class="form-group">
+              <label>目标类型</label>
+              <select id="goalType" required>
+                <option value="reduce_anger">减少愤怒</option>
+                <option value="improve_patience">提高耐心</option>
+                <option value="better_communication">改善沟通</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>目标标题</label>
+              <input type="text" id="goalTitle" required />
+            </div>
+            <div class="form-group">
+              <label>目标描述</label>
+              <textarea id="goalDescription"></textarea>
+            </div>
+            <div class="form-group">
+              <label>目标值</label>
+              <input type="number" id="goalTarget" step="0.1" required />
+            </div>
+            <div class="form-group">
+              <label>单位</label>
+              <select id="goalUnit">
+                <option value="percentage">百分比</option>
+                <option value="count">次数</option>
+                <option value="score">分数</option>
+              </select>
+            </div>
+            <div class="form-row">
+              <div class="form-group">
+                <label>开始日期</label>
+                <input type="date" id="goalStartDate" required />
+              </div>
+              <div class="form-group">
+                <label>结束日期</label>
+                <input type="date" id="goalEndDate" required />
+              </div>
+            </div>
+            <div class="form-actions">
+              <button type="button" id="cancelGoalBtn" class="btn-secondary">取消</button>
+              <button type="submit" class="btn-primary">创建</button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </div>
 
     <script src="./main.js" type="module"></script>
   </body>
