@@ -19,11 +19,12 @@ const report = document.getElementById('report');
 let sessionId = null;
 let familyId = null;
 let userId = null;
+let accessToken = null;
 let ws = null;
 let latestFeedbackToken = null;
 
 function authHeaders() {
-  return { 'Content-Type': 'application/json', 'x-user-id': userId };
+  return { 'Content-Type': 'application/json', Authorization: `Bearer ${accessToken}` };
 }
 
 async function ensureFamily() {
@@ -34,6 +35,14 @@ async function ensureFamily() {
   });
   const user = await userResp.json();
   userId = user.user_id;
+
+  const loginResp = await fetch(`${API}/v1/auth/login`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ user_id: userId })
+  });
+  const loginData = await loginResp.json();
+  accessToken = loginData.access_token;
 
   const familyResp = await fetch(`${API}/v1/families`, {
     method: 'POST',
@@ -109,25 +118,25 @@ acceptBtn.addEventListener('click', async () => {
 });
 
 reportBtn.addEventListener('click', async () => {
-  const res = await fetch(`${API}/v1/reports/daily/${sessionId}`, { headers: { 'x-user-id': userId } });
+  const res = await fetch(`${API}/v1/reports/daily/${sessionId}`, { headers: authHeaders() });
   const data = await res.json();
   report.textContent = JSON.stringify({ report: data }, null, 2);
 });
 
 eventsBtn.addEventListener('click', async () => {
-  const res = await fetch(`${API}/v1/sessions/${sessionId}/events`, { headers: { 'x-user-id': userId } });
+  const res = await fetch(`${API}/v1/sessions/${sessionId}/events`, { headers: authHeaders() });
   const data = await res.json();
   report.textContent = JSON.stringify({ events: data.items }, null, 2);
 });
 
 timeseriesBtn.addEventListener('click', async () => {
-  const res = await fetch(`${API}/v1/reports/timeseries/${sessionId}`, { headers: { 'x-user-id': userId } });
+  const res = await fetch(`${API}/v1/reports/timeseries/${sessionId}`, { headers: authHeaders() });
   const data = await res.json();
   report.textContent = JSON.stringify({ timeseries: data.points }, null, 2);
 });
 
 effectBtn.addEventListener('click', async () => {
-  const res = await fetch(`${API}/v1/reports/effectiveness/${sessionId}`, { headers: { 'x-user-id': userId } });
+  const res = await fetch(`${API}/v1/reports/effectiveness/${sessionId}`, { headers: authHeaders() });
   const data = await res.json();
   report.textContent = JSON.stringify({ effectiveness: data }, null, 2);
 });

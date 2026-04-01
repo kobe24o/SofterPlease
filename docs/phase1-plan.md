@@ -1,15 +1,22 @@
-# SofterPlease Phase-2 开发说明
+# SofterPlease 全阶段交付进度（截至 2026-04-01）
 
-## 已完成（第二阶段）
-- FastAPI 后端：用户、家庭、成员、会话管理。
-- WebSocket 实时反馈：按 anger_score 分级返回建议。
-- SQLite 持久化：会话、情绪事件、反馈事件可回溯。
-- 报表：日报、说话人维度、家庭日报、家庭时间范围报告、分钟级曲线、反馈接受率。
-- 租户隔离：基于 `x-user-id` 的成员权限控制（401/403）。
-- 自动化测试：覆盖主流程、权限隔离、参数校验和 WebSocket 错误路径。
+## Phase-1
+- 基础后端、WebSocket、Web Demo、报表、测试。
 
-## 下一阶段建议
-1. 引入 JWT/OAuth2（替代当前简化版 `x-user-id`）。
-2. 数据库迁移到 PostgreSQL + Alembic。
-3. 增加审计日志与埋点事件出口（Kafka/ClickHouse）。
-4. 模型服务接入：ASR/声纹/情绪融合推理链路。
+## Phase-2
+- 家庭租户隔离与权限控制。
+
+## Phase-3
+- 运维健康接口、部署手册、K8s 清单、宣发素材。
+
+## Phase-4（本次新增）
+- JWT 登录接口：`POST /v1/auth/login`
+- Bearer Token 鉴权路径（兼容旧 `x-user-id`）
+- Alembic 基础目录与初始迁移模板
+- GitHub Actions CI（安装依赖 + 自动测试）
+- Flutter 移动端壳工程
+
+## 下一步
+1. 完整迁移到 PostgreSQL 并补齐所有表迁移脚本。
+2. 移动端接入真实 API 与实时反馈链路。
+3. 加入模型服务（ASR/声纹/情绪）并做压测。

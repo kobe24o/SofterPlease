@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+
+import jwt
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -13,7 +16,9 @@ from sqlalchemy.orm import Session
 from .db import Base, SessionLocal, engine
 from .models import EmotionEvent, Family, FamilyMember, FeedbackEvent, Session as SessionModel, User
 
-APP_VERSION = "0.8.0"
+APP_VERSION = "1.0.0"
+JWT_SECRET = os.getenv("JWT_SECRET", "dev-secret-change-me")
+JWT_EXPIRE_MINUTES = int(os.getenv("JWT_EXPIRE_MINUTES", "120"))
 
 app = FastAPI(title="SofterPlease Phase-2 API", version=APP_VERSION)
 
@@ -31,6 +36,18 @@ class UserCreateRequest(BaseModel):
 
 class UserCreateResponse(BaseModel):
     user_id: str
+
+
+
+
+class AuthLoginRequest(BaseModel):
+    user_id: str = Field(min_length=1)
+
+
+class AuthLoginResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    expires_in: int
 
 
 class FamilyCreateRequest(BaseModel):
@@ -145,13 +162,36 @@ def now_utc() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def get_current_user_id(x_user_id: str | None = Header(default=None), db: Session = Depends(get_db)) -> str:
-    if not x_user_id:
-        raise HTTPException(status_code=401, detail="x-user-id header required")
-    user = db.get(User, x_user_id)
+def issue_jwt(user_id: str) -> str:
+    exp = now_utc() + timedelta(minutes=JWT_EXPIRE_MINUTES)
+    payload = {"sub": user_id, "exp": exp}
+    return jwt.encode(payload, JWT_SECRET, algorithm="HS256")
+
+
+def get_current_user_id(
+    authorization: str | None = Header(default=None),
+    x_user_id: str | None = Header(default=None),
+    db: Session = Depends(get_db),
+) -> str:
+    resolved_user_id: str | None = None
+
+    if authorization and authorization.lower().startswith("bearer "):
+        token = authorization.split(" ", 1)[1]
+        try:
+            payload = jwt.decode(token, JWT_SECRET, algorithms=["HS256"])
+            resolved_user_id = str(payload.get("sub"))
+        except jwt.PyJWTError as exc:
+            raise HTTPException(status_code=401, detail="invalid token") from exc
+    elif x_user_id:
+        resolved_user_id = x_user_id
+
+    if not resolved_user_id:
+        raise HTTPException(status_code=401, detail="authorization required")
+
+    user = db.get(User, resolved_user_id)
     if not user:
         raise HTTPException(status_code=401, detail="invalid user")
-    return x_user_id
+    return resolved_user_id
 
 
 def parse_iso_datetime(raw: str) -> datetime:
@@ -210,6 +250,15 @@ def create_user(payload: UserCreateRequest, db: Session = Depends(get_db)) -> Us
     db.add(User(id=user_id, nickname=payload.nickname, created_at=now_utc()))
     db.commit()
     return UserCreateResponse(user_id=user_id)
+
+
+@app.post("/v1/auth/login", response_model=AuthLoginResponse)
+def login(payload: AuthLoginRequest, db: Session = Depends(get_db)) -> AuthLoginResponse:
+    user = db.get(User, payload.user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="user not found")
+    token = issue_jwt(payload.user_id)
+    return AuthLoginResponse(access_token=token, expires_in=JWT_EXPIRE_MINUTES * 60)
 
 
 @app.post("/v1/families", response_model=FamilyCreateResponse)
