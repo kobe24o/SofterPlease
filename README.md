@@ -42,3 +42,15 @@ PYTHONPATH=backend pytest -q backend/tests
 - 宣发：`docs/marketing/poster_copy.md` / `docs/marketing/campaign_plan.md`
 - 阶段进度：`docs/phase1-plan.md`
 - 移动端：`mobile/README.md` / `mobile/flutter_app/`
+
+
+
+## GitHub Pages 发布
+仓库已包含 `.github/workflows/pages.yml`：
+- push 到 `main/work` 或手动触发后自动部署 `web/` 到 GitHub Pages
+
+## 移动端构建产物
+仓库已包含 `.github/workflows/mobile-build.yml`：
+- 自动构建 Flutter Android APK
+- 构建产物在 Actions Artifacts 下载
+

@@ -1,0 +1,27 @@
+name: mobile-build
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["main", "work"]
+
+jobs:
+  android-apk:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: mobile/flutter_app
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+      - name: Flutter pub get
+        run: flutter pub get
+      - name: Build APK
+        run: flutter build apk --release
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: softerplease-android-apk
+          path: mobile/flutter_app/build/app/outputs/flutter-apk/app-release.apk
