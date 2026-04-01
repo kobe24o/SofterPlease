@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>SofterPlease - Phase 1</title>
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <main class="container">
+      <h1>SofterPlease 实时反馈 Demo</h1>
+      <p>输入模拟 anger_score（0~1），观察实时反馈、事件列表与统计曲线数据。</p>
+
+      <section class="card">
+        <h2>会话控制</h2>
+        <button id="startBtn">开始会话</button>
+        <button id="endBtn" disabled>结束会话</button>
+        <p id="sessionText">当前会话：未开始</p>
+      </section>
+
+      <section class="card">
+        <h2>实时输入</h2>
+        <label>speaker_id <input id="speakerInput" value="member_a" /></label>
+        <label>transcript <input id="textInput" value="我现在有点着急" /></label>
+        <label>anger_score <input id="scoreInput" type="number" min="0" max="1" step="0.01" value="0.65" /></label>
+        <button id="sendBtn" disabled>发送实时样本</button>
+        <button id="acceptBtn" disabled>标记已采纳建议</button>
+      </section>
+
+      <section class="card">
+        <h2>反馈</h2>
+        <pre id="feedback"></pre>
+      </section>
+
+      <section class="card">
+        <h2>统计与事件</h2>
+        <button id="reportBtn" disabled>拉取日报</button>
+        <button id="eventsBtn" disabled>拉取事件</button>
+        <button id="timeseriesBtn" disabled>拉取曲线</button>
+        <button id="effectBtn" disabled>拉取采纳率</button>
+        <pre id="report"></pre>
+      </section>
+    </main>
+
+    <script src="./main.js" type="module"></script>
+  </body>
+</html>

@@ -1,0 +1,30 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: softerplease-web
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: softerplease-web
+  template:
+    metadata:
+      labels:
+        app: softerplease-web
+    spec:
+      containers:
+        - name: web
+          image: softerplease/web:latest
+          ports:
+            - containerPort: 80
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: softerplease-web
+spec:
+  selector:
+    app: softerplease-web
+  ports:
+    - port: 80
+      targetPort: 80
