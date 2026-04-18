@@ -20,6 +20,9 @@ import librosa
 import torch
 import torch.nn as nn
 
+from .text_emotion_model import TextEmotionModel
+from .multimodal_emotion_model import MultimodalEmotionModel
+
 # 配置日志
 logger = logging.getLogger(__name__)
 
@@ -143,6 +146,26 @@ class EmotionAnalyzer:
         self.model = None
         self.use_ml_model = False
         
+        # 文本情绪模型（可选）
+        self.text_model = None
+        text_model_path = os.getenv("TEXT_EMOTION_MODEL_PATH", "models/emotion_text_nb_v1.json")
+        if text_model_path and os.path.exists(text_model_path):
+            try:
+                self.text_model = TextEmotionModel.load(text_model_path)
+                logger.info(f"Loaded text emotion model from {text_model_path}")
+            except Exception as e:
+                logger.warning(f"Failed to load text emotion model from {text_model_path}: {e}")
+
+        # 多模态模型（文本+声学，可选）
+        self.multimodal_model = None
+        multimodal_model_path = os.getenv("MULTIMODAL_EMOTION_MODEL_PATH", "models/multimodal_emotion_v1.json")
+        if multimodal_model_path and os.path.exists(multimodal_model_path):
+            try:
+                self.multimodal_model = MultimodalEmotionModel.load(multimodal_model_path)
+                logger.info(f"Loaded multimodal emotion model from {multimodal_model_path}")
+            except Exception as e:
+                logger.warning(f"Failed to load multimodal emotion model from {multimodal_model_path}: {e}")
+
         # 优先使用传入的路径，其次从环境变量读取
         if model_path is None:
             model_path = os.getenv('EMOTION_MODEL_PATH', 'models/emotion_cnn.pth')
@@ -235,21 +258,31 @@ class EmotionAnalyzer:
         # 2. 基于文本的愤怒分数
         text_anger = self._calculate_text_anger(transcript)
         
-        # 3. 综合愤怒分数（加权平均）
+        # 3. 综合愤怒分数（规则融合）
         anger_score = 0.6 * acoustic_anger + 0.4 * text_anger
+
+        # 4. 若存在多模态模型，融合文本+声学学习分数
+        if self.multimodal_model is not None:
+            try:
+                mm_features = self._build_multimodal_features(transcript, acoustic_features)
+                mm_score = self.multimodal_model.predict_bad_probability(mm_features)
+                anger_score = 0.2 * anger_score + 0.8 * mm_score
+            except Exception as e:
+                logger.warning(f"Multimodal inference failed: {e}; fallback to rule score")
+
         anger_score = max(0.0, min(1.0, anger_score))
         
-        # 4. 确定情绪等级
+        # 5. 确定情绪等级
         emotion_level = self._get_emotion_level(anger_score)
         
-        # 5. 计算其他维度
+        # 6. 计算其他维度
         valence = self._calculate_valence(transcript, acoustic_features)
         arousal = self._calculate_arousal(acoustic_features)
         dominance = self._calculate_dominance(acoustic_features, transcript)
         stress = self._calculate_stress(acoustic_features, anger_score)
         impatience = self._calculate_impatience(transcript, acoustic_features)
         
-        # 6. 计算置信度
+        # 7. 计算置信度
         confidence = self._calculate_confidence(audio, transcript)
         
         return EmotionAnalysisResult(
@@ -308,36 +341,76 @@ class EmotionAnalyzer:
             score += 0.1
         
         return min(score, 1.0)
+
+    def _build_multimodal_features(self, transcript: str, acoustic_features: Dict[str, float]) -> Dict[str, float]:
+        """拼装多模态模型特征（训练与线上对齐）。"""
+        text = transcript.lower().strip()
+        anger_hits = sum(1 for w in self.ANGER_KEYWORDS if w in text)
+        exclaim = text.count("!") + text.count("！")
+        pos_words = ["谢谢", "慢慢", "冷静", "一起", "辛苦", "理解", "好"]
+        neg_words = ["生气", "烦", "闭嘴", "受够", "废话", "讨厌", "恨"]
+        pos_hits = sum(1 for w in pos_words if w in text)
+        neg_hits = sum(1 for w in neg_words if w in text)
+        text_len = len(text)
+
+        duration = 1.8  # 在线推理中没有完整时长特征时给定稳定默认
+        return {
+            "rms": float(acoustic_features.get("energy_mean", 0.0)),
+            "peak": float(acoustic_features.get("energy_mean", 0.0) + acoustic_features.get("energy_std", 0.0)),
+            "zcr": float(acoustic_features.get("zcr_mean", 0.0)),
+            "duration": duration,
+            "f0_est": float(acoustic_features.get("pitch_mean", 180.0)),
+            "text_len": float(text_len),
+            "exclaim": float(exclaim),
+            "anger_hits": float(anger_hits),
+            "pos_hits": float(pos_hits),
+            "neg_hits": float(neg_hits),
+            "speech_rate_proxy": float(text_len / max(duration, 0.1)),
+        }
     
     def _calculate_text_anger(self, transcript: str) -> float:
-        """基于文本内容计算愤怒分数"""
+        """基于文本内容计算愤怒分数。
+
+        规则引擎 + 文本模型融合：
+        - 若存在文本模型，使用 70% 模型分 + 30% 规则分
+        - 否则退化为纯规则
+        """
         if not transcript:
             return 0.0
-        
+
         text = transcript.lower()
-        score = 0.0
-        
+        rule_score = 0.0
+
         # 检查愤怒关键词
         for keyword in self.ANGER_KEYWORDS:
             if keyword in text:
-                score += 0.2
-        
+                rule_score += 0.2
+
         # 检查感叹号数量
         exclamation_count = text.count("！") + text.count("!")
-        score += min(exclamation_count * 0.1, 0.3)
-        
+        rule_score += min(exclamation_count * 0.1, 0.3)
+
         # 检查大写字母比例（英文 shouting）
         if any(c.isalpha() for c in text):
             upper_ratio = sum(1 for c in text if c.isupper()) / sum(1 for c in text if c.isalpha())
             if upper_ratio > 0.5:
-                score += 0.15
-        
+                rule_score += 0.15
+
         # 检查重复字符（如"啊啊啊"）
         import re
-        repeats = len(re.findall(r'(.)\1{2,}', text))
-        score += min(repeats * 0.1, 0.2)
-        
-        return min(score, 1.0)
+
+        repeats = len(re.findall(r"(.)\1{2,}", text))
+        rule_score += min(repeats * 0.1, 0.2)
+        rule_score = min(rule_score, 1.0)
+
+        if self.text_model is not None:
+            try:
+                model_score = self.text_model.predict(transcript).bad_probability
+                return min(max(0.7 * model_score + 0.3 * rule_score, 0.0), 1.0)
+            except Exception as e:
+                logger.warning(f"Text model inference failed: {e}; fallback to rule score")
+
+        return rule_score
     
     def _calculate_valence(self, transcript: str, features: Dict[str, float]) -> float:
         """计算情感效价 (-1 到 1)"""

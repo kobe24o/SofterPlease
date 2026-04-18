@@ -3,3 +3,9 @@ __pycache__/
 .venv/
 .DS_Store
 *.db
+
+# Generated audio / binary artifacts
+*.wav
+*.mp3
+*.flac
+training/data/multimodal_corpus/wav/
