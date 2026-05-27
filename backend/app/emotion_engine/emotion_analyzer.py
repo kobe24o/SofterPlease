@@ -15,7 +15,7 @@ import os
 import logging
 import numpy as np
 from typing import Dict, Any, Optional
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import librosa
 import torch
 import torch.nn as nn
@@ -29,6 +29,7 @@ class EmotionAnalysisResult:
     """情绪分析结果"""
     anger_score: float  # 0-1, 愤怒程度
     emotion_level: str  # calm, mild, moderate, high, extreme
+    emotion_value: int  # -1 负向, 0 中性, 1 正向
     
     # 多维度情绪
     valence: float      # -1 to 1, 负面到正面
@@ -42,11 +43,14 @@ class EmotionAnalysisResult:
     
     # 置信度
     confidence: float
+    model_backend: str = "rule"
+    raw_emotions: Dict[str, float] = field(default_factory=dict)
     
     def to_dict(self) -> Dict[str, Any]:
         return {
             "anger_score": round(self.anger_score, 4),
             "emotion_level": self.emotion_level,
+            "emotion_value": self.emotion_value,
             "emotion_dimensions": {
                 "valence": round(self.valence, 4),
                 "arousal": round(self.arousal, 4),
@@ -56,6 +60,10 @@ class EmotionAnalysisResult:
             },
             "acoustic_features": self.acoustic_features,
             "confidence": round(self.confidence, 4),
+            "model_backend": self.model_backend,
+            "raw_emotions": {
+                label: round(score, 4) for label, score in self.raw_emotions.items()
+            },
         }
 
 
@@ -118,6 +126,14 @@ class EmotionAnalyzer:
         (0.7, 0.85, "high"),
         (0.85, 1.0, "extreme"),
     ]
+
+    CAIRE_MODEL_ID = "CAiRE/SER-wav2vec2-large-xlsr-53-eng-zho-all-age"
+    CAIRE_LABELS = [
+        "sadness", "fear", "angry", "happiness", "disgust", "neutral", "surprise",
+        "positive", "negative", "excitement", "frustrated", "other", "unknown",
+    ]
+    POSITIVE_LABELS = {"happiness", "positive", "excitement"}
+    NEGATIVE_LABELS = {"sadness", "fear", "angry", "disgust", "negative", "frustrated"}
     
     # 愤怒关键词（中文）
     ANGER_KEYWORDS = [
@@ -133,11 +149,17 @@ class EmotionAnalyzer:
     ]
     
     def __init__(self, model_path: Optional[str] = None, device: str = "cpu"):
+        device = os.getenv("EMOTION_DEVICE", device)
         self.device = torch.device(device)
         self.sample_rate = 16000
         self.n_mels = 128
         self.hop_length = 512
         self.n_fft = 2048
+        self.backend = os.getenv("EMOTION_BACKEND", "caire").strip().lower()
+        self.caire_model_id = os.getenv("CAIRE_MODEL_ID", self.CAIRE_MODEL_ID)
+        self._caire_model = None
+        self._caire_feature_extractor = None
+        self._caire_load_attempted = False
         
         # 初始化模型（如果没有预训练模型，使用规则引擎）
         self.model = None
@@ -162,6 +184,89 @@ class EmotionAnalyzer:
                 logger.warning(f"Model weights not found at {model_path}, using rule-based engine")
             else:
                 logger.info("No model path provided, using rule-based engine")
+
+    def _ensure_caire_model(self) -> bool:
+        """延迟加载 CAiRE 模型，避免服务启动时阻塞或强依赖 transformers。"""
+        if self._caire_model is not None and self._caire_feature_extractor is not None:
+            return True
+        if self._caire_load_attempted:
+            return False
+
+        self._caire_load_attempted = True
+        try:
+            from transformers import Wav2Vec2FeatureExtractor, Wav2Vec2ForSequenceClassification
+            from transformers.modeling_outputs import SequenceClassifierOutput
+            from torch.nn import BCEWithLogitsLoss
+
+            class Wav2Vec2ForMultilabelSequenceClassification(Wav2Vec2ForSequenceClassification):
+                def forward(
+                    inner_self,
+                    input_values,
+                    attention_mask=None,
+                    output_attentions=None,
+                    output_hidden_states=None,
+                    return_dict=None,
+                    labels=None,
+                    labels_mask=None,
+                ):
+                    return_dict = return_dict if return_dict is not None else inner_self.config.use_return_dict
+                    output_hidden_states = True if inner_self.config.use_weighted_layer_sum else output_hidden_states
+
+                    outputs = inner_self.wav2vec2(
+                        input_values,
+                        attention_mask=attention_mask,
+                        output_attentions=output_attentions,
+                        output_hidden_states=output_hidden_states,
+                        return_dict=return_dict,
+                    )
+                    hidden_states = outputs.hidden_states if inner_self.config.use_weighted_layer_sum else outputs[0]
+                    if inner_self.config.use_weighted_layer_sum:
+                        hidden_states = torch.stack(hidden_states, dim=1)
+                        norm_weights = nn.functional.softmax(inner_self.layer_weights, dim=-1)
+                        hidden_states = (hidden_states * norm_weights.view(-1, 1, 1)).sum(dim=1)
+
+                    hidden_states = inner_self.projector(hidden_states)
+                    if attention_mask is None:
+                        pooled_output = hidden_states.mean(dim=1)
+                    else:
+                        padding_mask = inner_self._get_feature_vector_attention_mask(
+                            hidden_states.shape[1], attention_mask
+                        )
+                        hidden_states[~padding_mask] = 0.0
+                        pooled_output = hidden_states.sum(dim=1) / padding_mask.sum(dim=1).view(-1, 1)
+
+                    logits = inner_self.classifier(pooled_output)
+                    loss = None
+                    if labels is not None:
+                        if labels_mask is None:
+                            labels_mask = torch.ones_like(labels)
+                        loss_fct = BCEWithLogitsLoss(weight=labels_mask.view(-1))
+                        loss = loss_fct(logits.view(-1), labels.float().view(-1))
+
+                    if not return_dict:
+                        output = (logits,) + outputs[2:]
+                        return ((loss,) + output) if loss is not None else output
+
+                    return SequenceClassifierOutput(
+                        loss=loss,
+                        logits=logits,
+                        hidden_states=outputs.hidden_states,
+                        attentions=outputs.attentions,
+                    )
+
+            self._caire_feature_extractor = Wav2Vec2FeatureExtractor.from_pretrained(self.caire_model_id)
+            self._caire_model = Wav2Vec2ForMultilabelSequenceClassification.from_pretrained(
+                self.caire_model_id,
+                num_labels=len(self.CAIRE_LABELS),
+            ).to(self.device)
+            self._caire_model.eval()
+            logger.info("Loaded CAiRE SER model: %s", self.caire_model_id)
+            return True
+        except Exception as exc:
+            logger.warning("Failed to load CAiRE SER model, falling back to rules: %s", exc)
+            self._caire_model = None
+            self._caire_feature_extractor = None
+            return False
     
     def _extract_mel_spectrogram(self, audio: np.ndarray) -> np.ndarray:
         """提取梅尔频谱图"""
@@ -255,6 +360,7 @@ class EmotionAnalyzer:
         return EmotionAnalysisResult(
             anger_score=anger_score,
             emotion_level=emotion_level,
+            emotion_value=self._valence_to_emotion_value(valence),
             valence=valence,
             arousal=arousal,
             dominance=dominance,
@@ -262,7 +368,16 @@ class EmotionAnalyzer:
             impatience=impatience,
             acoustic_features=acoustic_features,
             confidence=confidence,
+            model_backend="rule",
         )
+
+    def _valence_to_emotion_value(self, valence: float, neutral_margin: float = 0.2) -> int:
+        """将连续效价映射为产品需要的 -1 / 0 / 1。"""
+        if valence <= -neutral_margin:
+            return -1
+        if valence >= neutral_margin:
+            return 1
+        return 0
     
     def _calculate_acoustic_anger(self, features: Dict[str, float]) -> float:
         """基于声学特征计算愤怒分数"""
@@ -522,11 +637,86 @@ class EmotionAnalyzer:
         # 提取声学特征
         acoustic_features = self._extract_acoustic_features(audio, self.sample_rate)
         
-        # 使用ML模型或规则引擎
+        # 使用 CAiRE、旧本地模型或规则引擎
+        if self.backend == "caire" and self._ensure_caire_model():
+            return self._caire_based_analysis(audio, transcript, acoustic_features)
         if self.use_ml_model and self.model:
             return self._ml_based_analysis(audio, transcript, acoustic_features)
         else:
             return self._rule_based_analysis(audio, transcript, acoustic_features)
+
+    def _caire_based_analysis(
+        self,
+        audio: np.ndarray,
+        transcript: str,
+        acoustic_features: Dict[str, float],
+    ) -> EmotionAnalysisResult:
+        """使用 CAiRE 中英文语音情绪识别模型，并聚合成 -1/0/1。"""
+        inputs = self._caire_feature_extractor(
+            audio.astype(np.float32),
+            sampling_rate=self.sample_rate,
+            return_tensors="pt",
+            padding=True,
+        )
+        inputs = {key: value.to(self.device) for key, value in inputs.items()}
+
+        with torch.no_grad():
+            logits = self._caire_model(**inputs).logits[0]
+            probs = torch.sigmoid(logits).detach().cpu().numpy()
+
+        raw_emotions = {
+            label: float(probs[index]) for index, label in enumerate(self.CAIRE_LABELS)
+        }
+
+        positive_score = max(raw_emotions[label] for label in self.POSITIVE_LABELS)
+        negative_score = max(raw_emotions[label] for label in self.NEGATIVE_LABELS)
+        neutral_score = raw_emotions["neutral"]
+        valence = float(np.clip(positive_score - negative_score, -1.0, 1.0))
+
+        if neutral_score >= max(positive_score, negative_score) * 0.9 or abs(valence) < 0.15:
+            emotion_value = 0
+        else:
+            emotion_value = 1 if valence > 0 else -1
+
+        anger_score = max(
+            raw_emotions["angry"],
+            raw_emotions["frustrated"] * 0.85,
+            raw_emotions["negative"] * 0.7,
+            raw_emotions["disgust"] * 0.65,
+            raw_emotions["fear"] * 0.5,
+            raw_emotions["sadness"] * 0.4,
+        )
+        arousal = max(
+            raw_emotions["angry"],
+            raw_emotions["fear"],
+            raw_emotions["surprise"],
+            raw_emotions["excitement"],
+            raw_emotions["frustrated"],
+        )
+        dominance = float(np.clip(
+            0.45 + raw_emotions["angry"] * 0.35 + raw_emotions["positive"] * 0.2
+            - raw_emotions["sadness"] * 0.25,
+            0.0,
+            1.0,
+        ))
+        stress = max(raw_emotions["angry"], raw_emotions["fear"], raw_emotions["frustrated"], raw_emotions["negative"])
+        impatience = max(raw_emotions["frustrated"], raw_emotions["angry"] * 0.75)
+        confidence = max(raw_emotions.values())
+
+        return EmotionAnalysisResult(
+            anger_score=float(np.clip(anger_score, 0.0, 1.0)),
+            emotion_level=self._get_emotion_level(float(np.clip(anger_score, 0.0, 1.0))),
+            emotion_value=emotion_value,
+            valence=valence,
+            arousal=float(np.clip(arousal, 0.0, 1.0)),
+            dominance=dominance,
+            stress=float(np.clip(stress, 0.0, 1.0)),
+            impatience=float(np.clip(impatience, 0.0, 1.0)),
+            acoustic_features=acoustic_features,
+            confidence=float(np.clip(confidence, 0.0, 1.0)),
+            model_backend="caire",
+            raw_emotions=raw_emotions,
+        )
     
     def _ml_based_analysis(
         self, 
@@ -574,6 +764,7 @@ class EmotionAnalyzer:
         return EmotionAnalysisResult(
             anger_score=anger_score,
             emotion_level=emotion_level,
+            emotion_value=self._valence_to_emotion_value(valence),
             valence=valence,
             arousal=arousal,
             dominance=dominance,
@@ -581,6 +772,7 @@ class EmotionAnalyzer:
             impatience=impatience,
             acoustic_features=acoustic_features,
             confidence=confidence,
+            model_backend="local_cnn",
         )
     
     def analyze_batch(

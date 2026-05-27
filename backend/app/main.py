@@ -1,13 +1,17 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import uuid
 from datetime import datetime, timedelta, timezone
-from typing import Optional
+from typing import Any, Optional
 
 import jwt
 import numpy as np
+
+# 配置日志
+logger = logging.getLogger(__name__)
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, WebSocket, WebSocketDisconnect, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
@@ -135,9 +139,12 @@ class AnalyticsEventRequest(BaseModel):
 class EmotionAnalysisResponse(BaseModel):
     anger_score: float
     emotion_level: str
+    emotion_value: int
     emotion_dimensions: dict
     acoustic_features: dict
     confidence: float
+    model_backend: str
+    raw_emotions: dict
     speaker_id: str
     speaker_confidence: float
 
@@ -261,6 +268,15 @@ def generate_invite_code() -> str:
     return ''.join(random.choices(string.ascii_uppercase + string.digits, k=8))
 
 
+def elapsed_ms(start: datetime, end: datetime) -> int:
+    """计算耗时，兼容 SQLite 取回的 naive datetime。"""
+    if start.tzinfo is None and end.tzinfo is not None:
+        end = end.replace(tzinfo=None)
+    elif start.tzinfo is not None and end.tzinfo is None:
+        start = start.replace(tzinfo=None)
+    return int((end - start).total_seconds() * 1000)
+
+
 # ==================== Health Check ====================
 
 @app.get("/health")
@@ -280,7 +296,7 @@ def readyz(db: Session = Depends(get_db)) -> dict[str, str]:
 
 
 @app.get("/v1/system/info")
-def system_info() -> dict[str, str]:
+def system_info() -> dict[str, Any]:
     return {
         "version": APP_VERSION,
         "server_time": now_utc().isoformat(),
@@ -300,9 +316,39 @@ def create_user(payload: UserCreateRequest, db: Session = Depends(get_db)) -> Us
         email=payload.email,
         created_at=now_utc(),
     )
-    db.add(user)
-    db.commit()
-    return UserCreateResponse(user_id=user_id, nickname=payload.nickname)
+    
+    try:
+        # 开始事务
+        db.add(user)
+        
+        # 自动为新用户创建家庭
+        family_id = str(uuid.uuid4())
+        family = Family(
+            id=family_id,
+            name=f"{payload.nickname}的家庭",
+            owner_user_id=user_id,
+            invite_code=generate_invite_code(),
+            created_at=now_utc(),
+        )
+        db.add(family)
+        
+        # 将用户添加为家庭管理员
+        family_member = FamilyMember(
+            family_id=family_id,
+            user_id=user_id,
+            role="owner",
+            joined_at=now_utc(),
+        )
+        db.add(family_member)
+        
+        # 提交事务
+        db.commit()
+        return UserCreateResponse(user_id=user_id, nickname=payload.nickname)
+    except Exception as e:
+        # 回滚事务
+        db.rollback()
+        logger.error(f"Failed to create user with family: {e}")
+        raise HTTPException(status_code=500, detail="Failed to create user")
 
 
 @app.get("/v1/users/me")
@@ -347,6 +393,17 @@ def login(payload: AuthLoginRequest, db: Session = Depends(get_db)) -> AuthLogin
     if not user:
         raise HTTPException(status_code=404, detail="user not found")
     
+    # 更新最后登录时间
+    user.last_login_at = now_utc()
+    db.commit()
+    
+    # 获取用户家庭信息
+    families = db.execute(
+        select(Family, FamilyMember)
+        .join(FamilyMember, Family.id == FamilyMember.family_id)
+        .where(FamilyMember.user_id == user.id)
+    ).all()
+    
     token = issue_jwt(payload.user_id)
     
     return AuthLoginResponse(
@@ -356,6 +413,19 @@ def login(payload: AuthLoginRequest, db: Session = Depends(get_db)) -> AuthLogin
             "id": user.id,
             "nickname": user.nickname,
             "avatar_url": user.avatar_url,
+            "phone": user.phone,
+            "email": user.email,
+            "created_at": user.created_at.isoformat(),
+            "last_login_at": user.last_login_at.isoformat() if user.last_login_at else None,
+            "families": [
+                {
+                    "family_id": f.Family.id,
+                    "family_name": f.Family.name,
+                    "role": f.FamilyMember.role,
+                    "joined_at": f.FamilyMember.joined_at.isoformat(),
+                }
+                for f in families
+            ],
         }
     )
 
@@ -545,6 +615,69 @@ def start_session(
     )
 
 
+@app.post("/v1/voice/analyze")
+async def analyze_voice(
+    audio: UploadFile = File(...),
+    session_id: str = None,
+    device_id: str = None,
+    db: Session = Depends(get_db),
+    user_id: str = Depends(get_current_user_id),
+) -> dict:
+    """分析语音情绪"""
+    try:
+        # 读取音频文件
+        audio_data = await audio.read()
+        
+        # 尝试处理音频，捕获格式错误
+        try:
+            # 处理音频
+            processed_audio = audio_processor.process_audio(audio_data)
+        except Exception as e:
+            logger.warning(f"Audio processing error: {e}, trying alternative approach")
+            # 如果处理失败，尝试直接使用音频数据（适用于浏览器录制的格式）
+            # 这里可以添加更多的错误处理和格式转换逻辑
+            raise HTTPException(status_code=400, detail="Unsupported audio format")
+        
+        # 分析情绪
+        emotion_result = emotion_analyzer.analyze(processed_audio)
+        
+        # 生成反馈
+        feedback = feedback_generator.generate_feedback(
+            user_id=user_id,
+            emotion_level=emotion_result.emotion_level,
+            anger_score=emotion_result.anger_score,
+        )
+        
+        # 保存情绪事件
+        if session_id:
+            emotion_event = EmotionEvent(
+                id=str(uuid.uuid4()),
+                session_id=session_id,
+                user_id=user_id,
+                anger_score=emotion_result.anger_score,
+                emotion_level=emotion_result.emotion_level,
+                created_at=now_utc(),
+            )
+            db.add(emotion_event)
+            db.commit()
+        
+        return {
+            "anger_score": emotion_result.anger_score,
+            "emotion_level": emotion_result.emotion_level,
+            "emotion_value": emotion_result.emotion_value,
+            "emotion_dimensions": emotion_result.to_dict()["emotion_dimensions"],
+            "confidence": emotion_result.confidence,
+            "model_backend": emotion_result.model_backend,
+            "raw_emotions": emotion_result.raw_emotions,
+            "feedback": feedback.to_dict() if feedback else None,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Voice analysis error: {e}")
+        raise HTTPException(status_code=500, detail="Failed to analyze voice")
+
+
 @app.post("/v1/sessions/{session_id}/pause")
 def pause_session(
     session_id: str,
@@ -621,6 +754,45 @@ def get_session(
         "total_emotion_events": session.total_emotion_events,
         "avg_anger_score": session.avg_anger_score,
         "max_anger_score": session.max_anger_score,
+    }
+
+
+@app.get("/v1/sessions/{session_id}/events")
+def list_session_events(
+    session_id: str,
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    db: Session = Depends(get_db),
+    user_id: str = Depends(get_current_user_id),
+) -> dict:
+    family_id = get_family_by_session(db, session_id)
+    ensure_family_member(db, family_id, user_id)
+
+    events = db.execute(
+        select(EmotionEvent)
+        .where(EmotionEvent.session_id == session_id)
+        .order_by(desc(EmotionEvent.ts))
+        .limit(limit)
+        .offset(offset)
+    ).scalars().all()
+
+    return {
+        "session_id": session_id,
+        "limit": limit,
+        "offset": offset,
+        "events": [
+            {
+                "id": event.id,
+                "ts": event.ts.isoformat(),
+                "speaker_id": event.speaker_id,
+                "speaker_confidence": event.speaker_confidence,
+                "transcript": event.transcript,
+                "anger_score": event.anger_score,
+                "emotion_level": event.emotion_level,
+                "emotion_dimensions": event.emotion_dimensions,
+            }
+            for event in events
+        ],
     }
 
 
@@ -749,9 +921,12 @@ async def analyze_emotion(
     return EmotionAnalysisResponse(
         anger_score=emotion_result.anger_score,
         emotion_level=emotion_result.emotion_level,
+        emotion_value=emotion_result.emotion_value,
         emotion_dimensions=emotion_result.to_dict()["emotion_dimensions"],
         acoustic_features=emotion_result.acoustic_features,
         confidence=emotion_result.confidence,
+        model_backend=emotion_result.model_backend,
+        raw_emotions=emotion_result.raw_emotions,
         speaker_id=detected_speaker,
         speaker_confidence=voice_result.confidence,
     )
@@ -780,8 +955,7 @@ def post_feedback_action(
     
     # 计算响应时间
     if feedback.shown_at:
-        response_time = (feedback.acted_at - feedback.shown_at).total_seconds() * 1000
-        feedback.user_response_time_ms = int(response_time)
+        feedback.user_response_time_ms = elapsed_ms(feedback.shown_at, feedback.acted_at)
     
     db.commit()
     
@@ -799,7 +973,7 @@ def post_feedback_action(
 @app.get("/v1/reports/daily/{family_id}")
 def get_daily_report(
     family_id: str,
-    date: str = Query(..., description="Date in YYYY-MM-DD format"),
+    date: str = Query(default_factory=lambda: now_utc().date().isoformat(), description="Date in YYYY-MM-DD format"),
     db: Session = Depends(get_db),
     user_id: str = Depends(get_current_user_id),
 ) -> DailyReportResponse:
@@ -1037,6 +1211,8 @@ async def realtime_ws(websocket: WebSocket) -> None:
         while True:
             message = await websocket.receive_json()
             msg_type = message.get("type")
+            if msg_type is None and message.get("session_id"):
+                msg_type = "analyze"
             
             if msg_type == "analyze":
                 await _handle_analyze_message(websocket, message, db)
@@ -1148,6 +1324,7 @@ async def _handle_analyze_message(websocket: WebSocket, message: dict, db: Sessi
             "strategy": feedback.strategy,
             "duration_seconds": feedback.duration_seconds,
         }
+        response["feedback_token"] = feedback_token
     
     await websocket.send_json(response)
 
@@ -1174,8 +1351,7 @@ async def _handle_feedback_action(websocket: WebSocket, message: dict, db: Sessi
     
     # 计算响应时间
     if feedback.shown_at:
-        response_time = (feedback.acted_at - feedback.shown_at).total_seconds() * 1000
-        feedback.user_response_time_ms = int(response_time)
+        feedback.user_response_time_ms = elapsed_ms(feedback.shown_at, feedback.acted_at)
     
     # 更新会话统计
     if action == "accepted":

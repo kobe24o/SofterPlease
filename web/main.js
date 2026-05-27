@@ -324,16 +324,17 @@ const auth = {
       const user = await api.createUser(nickname);
       const authData = await api.login(user.user_id);
       
-      state.user = { ...user, ...authData.user };
+      state.user = authData.user;
       state.token = authData.access_token;
       
       // 保存到本地存储
       localStorage.setItem('softerplease_user', JSON.stringify(state.user));
       localStorage.setItem('softerplease_token', state.token);
       
-      // 创建默认家庭
-      const family = await api.createFamily('我的家庭');
-      state.currentFamily = family;
+      // 使用自动创建的家庭
+      if (state.user.families && state.user.families.length > 0) {
+        state.currentFamily = state.user.families[0];
+      }
       
       this.showMainPage();
       api.trackEvent('user_created', { nickname });
@@ -588,6 +589,16 @@ function hideFeedbackActions() {
   state.currentFeedbackToken = null;
 }
 
+// 音频录制相关变量
+let mediaRecorder;
+let audioChunks = [];
+let recordingInterval;
+let audioContext;
+let analyser;
+let dataArray;
+let bufferLength;
+let stream;
+
 // 会话控制
 async function startSession() {
   if (!state.user || !state.user.families || state.user.families.length === 0) {
@@ -599,8 +610,12 @@ async function startSession() {
   const deviceId = 'web-' + Math.random().toString(36).substr(2, 9);
   
   try {
+    // 开始会话
     const session = await api.startSession(familyId, deviceId, 'web');
     state.currentSession = session;
+    
+    // 开始麦克风录制
+    await startRecording();
     
     $('#startSessionBtn').classList.add('hidden');
     $('#pauseSessionBtn').classList.remove('hidden');
@@ -612,11 +627,161 @@ async function startSession() {
   }
 }
 
+// 开始麦克风录制
+async function startRecording() {
+  try {
+    // 请求麦克风权限
+    stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    
+    // 创建音频上下文和分析器
+    audioContext = new (window.AudioContext || window.webkitAudioContext)();
+    analyser = audioContext.createAnalyser();
+    const source = audioContext.createMediaStreamSource(stream);
+    source.connect(analyser);
+    
+    analyser.fftSize = 2048;
+    bufferLength = analyser.frequencyBinCount;
+    dataArray = new Uint8Array(bufferLength);
+    
+    // 创建脚本处理器节点用于实时处理音频
+    const bufferSize = 4096;
+    const scriptProcessor = audioContext.createScriptProcessor(bufferSize, 1, 1);
+    
+    // 音频数据缓冲区
+    const audioBuffer = [];
+    
+    // 处理音频数据
+    scriptProcessor.onaudioprocess = (event) => {
+      const inputData = event.inputBuffer.getChannelData(0);
+      const outputData = event.outputBuffer.getChannelData(0);
+      
+      // 复制输入到输出（通过）
+      for (let i = 0; i < bufferSize; i++) {
+        outputData[i] = inputData[i];
+        audioBuffer.push(inputData[i]);
+      }
+    };
+    
+    // 连接音频处理链
+    source.connect(scriptProcessor);
+    scriptProcessor.connect(audioContext.destination);
+    
+    // 每2秒发送一次音频进行分析
+    recordingInterval = setInterval(async () => {
+      if (audioBuffer.length > 0) {
+        // 复制并清空缓冲区
+        const audioData = Float32Array.from(audioBuffer);
+        audioBuffer.length = 0;
+        
+        // 转换为WAV格式
+        const wavBlob = audioToWav(audioData, audioContext.sampleRate);
+        
+        // 发送音频到后端分析
+        await analyzeAudio(wavBlob);
+      }
+    }, 2000);
+    
+    console.log('麦克风录制已开始');
+  } catch (error) {
+    console.error('麦克风录制失败:', error);
+    alert('无法访问麦克风，请检查权限设置');
+  }
+}
+
+// 将音频数据转换为WAV格式
+function audioToWav(audioData, sampleRate) {
+  const numOfChan = 1;
+  const length = audioData.length * 2;
+  const buffer = new ArrayBuffer(44 + length);
+  const view = new DataView(buffer);
+  
+  // RIFF 标识符
+  writeString(view, 0, 'RIFF');
+  view.setUint32(4, 36 + length, true);
+  writeString(view, 8, 'WAVE');
+  
+  // fmt 子块
+  writeString(view, 12, 'fmt ');
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true); // PCM格式
+  view.setUint16(22, numOfChan, true);
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate * 2, true); // 字节率
+  view.setUint16(32, 2, true); // 块对齐
+  view.setUint16(34, 16, true); // 位深度
+  
+  // data 子块
+  writeString(view, 36, 'data');
+  view.setUint32(40, length, true);
+  
+  // 写入音频数据
+  const floatTo16BitPCM = (output, offset, input) => {
+    for (let i = 0; i < input.length; i++, offset += 2) {
+      const s = Math.max(-1, Math.min(1, input[i]));
+      output.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
+    }
+  };
+  
+  floatTo16BitPCM(view, 44, audioData);
+  
+  return new Blob([buffer], { type: 'audio/wav' });
+}
+
+// 写入字符串到DataView
+function writeString(view, offset, string) {
+  for (let i = 0; i < string.length; i++) {
+    view.setUint8(offset + i, string.charCodeAt(i));
+  }
+}
+
+// 分析音频
+async function analyzeAudio(audioBlob) {
+  if (!state.currentSession) return;
+  
+  try {
+    const formData = new FormData();
+    formData.append('audio', audioBlob, 'recording.wav');
+    formData.append('session_id', state.currentSession.session_id);
+    formData.append('device_id', 'web-' + Math.random().toString(36).substr(2, 9));
+    
+    // 发送音频到后端分析
+    const response = await fetch('http://localhost:8000/v1/voice/analyze', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${state.token}`
+      },
+      body: formData
+    });
+    
+    if (response.ok) {
+      const result = await response.json();
+      console.log('情绪分析结果:', result);
+      
+      // 更新实时显示
+      updateRealtimeDisplay({
+        type: 'analysis_result',
+        anger_score: result.anger_score,
+        emotion_level: result.emotion_level,
+        feedback: result.feedback
+      });
+    } else {
+      console.error('分析失败:', await response.text());
+    }
+  } catch (error) {
+    console.error('分析音频失败:', error);
+  }
+}
+
 async function endSession() {
   if (!state.currentSession) return;
   
   try {
+    // 停止麦克风录制
+    stopRecording();
+    
+    // 结束会话
     await api.endSession(state.currentSession.session_id);
+    
     state.currentSession = null;
     
     $('#startSessionBtn').classList.remove('hidden');
@@ -627,6 +792,27 @@ async function endSession() {
   } catch (error) {
     alert('结束会话失败: ' + error.message);
   }
+}
+
+// 停止麦克风录制
+function stopRecording() {
+  if (recordingInterval) {
+    clearInterval(recordingInterval);
+    recordingInterval = null;
+  }
+  
+  if (audioContext) {
+    audioContext.close();
+    audioContext = null;
+  }
+  
+  // 关闭媒体流
+  if (stream) {
+    stream.getTracks().forEach(track => track.stop());
+    stream = null;
+  }
+  
+  console.log('麦克风录制已停止');
 }
 
 // 报告页面

@@ -5,3 +5,9 @@ httpx==0.28.1
 sqlalchemy==2.0.43
 pytest==8.4.2
 PyJWT==2.10.1
+python-multipart==0.0.20
+numpy>=1.26,<3
+librosa>=0.10.2,<0.12
+soundfile>=0.12.1,<0.14
+torch>=2.2
+transformers>=4.40,<5

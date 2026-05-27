@@ -386,3 +386,22 @@ class AudioProcessor:
             return buffer.getvalue()
         else:
             raise ValueError(f"Unsupported target format: {target_format}")
+    
+    def process_audio(self, audio_data: bytes) -> np.ndarray:
+        """
+        处理音频数据
+        
+        Args:
+            audio_data: 音频字节数据
+            
+        Returns:
+            处理后的音频数组
+        """
+        # 1. 加载音频
+        audio, sr = self.load_audio(audio_data)
+        
+        # 2. 预处理
+        processed = self.preprocess(audio, sr)
+        
+        # 3. 返回处理后的音频
+        return processed.audio
