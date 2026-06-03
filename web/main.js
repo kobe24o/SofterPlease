@@ -12,6 +12,7 @@ const state = {
   charts: {},
   realtimeData: [],
   currentFeedbackToken: null,
+  modelDebugSession: null,
 };
 
 // 工具函数
@@ -90,6 +91,16 @@ const api = {
   
   async getMe() {
     return this.request('/v1/users/me');
+  },
+
+  async getSystemInfo() {
+    return this.request('/v1/system/info');
+  },
+
+  async preloadEmotionModel() {
+    return this.request('/v1/system/emotion-model/load', {
+      method: 'POST',
+    });
   },
   
   async createFamily(name) {
@@ -272,6 +283,9 @@ const navigation = {
         break;
       case 'family':
         loadFamilyData();
+        break;
+      case 'modelDebug':
+        initModelDebugPage();
         break;
     }
   },
@@ -925,6 +939,529 @@ async function loadFamilyData() {
   }
 }
 
+// 模型调试页面
+let debugMediaRecorder;
+let debugRecordedChunks = [];
+let debugRecordedBlob;
+let debugStream;
+let debugWavBlob;
+let debugRecordStartedAt;
+let debugRecordTimerInterval;
+let debugAudioContext;
+let debugAudioSource;
+let debugAnalyser;
+let debugLevelData;
+let debugLevelInterval;
+let debugCaptureSampleRate = 16000;
+let debugPeakLevel = 0;
+let debugRmsLevel = 0;
+
+function setDebugBadge(selector, text, type = '') {
+  const el = $(selector);
+  if (!el) return;
+  el.textContent = text;
+  el.className = `status-badge ${type}`.trim();
+}
+
+function setDebugText(selector, text) {
+  const el = $(selector);
+  if (el) {
+    el.textContent = text ?? '--';
+  }
+}
+
+function formatDebugValue(value) {
+  if (value === null || value === undefined) return '--';
+  if (typeof value === 'number') {
+    return Number.isInteger(value) ? String(value) : value.toFixed(4);
+  }
+  if (typeof value === 'boolean') return value ? 'true' : 'false';
+  return String(value);
+}
+
+function renderDebugTable(selector, data) {
+  const el = $(selector);
+  if (!el) return;
+
+  if (!data || Object.keys(data).length === 0) {
+    el.innerHTML = '<p class="debug-hint">暂无数据</p>';
+    return;
+  }
+
+  el.innerHTML = Object.entries(data).map(([key, value]) => `
+    <div class="debug-table-row">
+      <span>${key}</span>
+      <strong>${formatDebugValue(value)}</strong>
+    </div>
+  `).join('');
+}
+
+function appendDebugLog(message, type = 'info') {
+  const log = $('#debugLog');
+  if (!log) return;
+
+  const row = document.createElement('div');
+  row.className = `debug-log-row ${type}`;
+  row.innerHTML = `<span>${formatTime(new Date())}</span><p>${message}</p>`;
+  log.prepend(row);
+}
+
+function getActiveModelLoaded(model) {
+  if (!model) return false;
+  if (model.backend === 'sensevoice') return model.sensevoice_loaded;
+  if (model.backend === 'caire') return model.caire_loaded;
+  if (model.backend === 'local_cnn') return model.local_cnn_loaded;
+  return model.fallback_backend === 'rule';
+}
+
+function getActiveModelId(model) {
+  if (!model) return '--';
+  if (model.backend === 'sensevoice') return model.sensevoice_model_id;
+  if (model.backend === 'caire') return model.caire_model_id;
+  if (model.backend === 'local_cnn') return 'models/emotion_cnn.pth';
+  return 'rule-based';
+}
+
+async function initModelDebugPage() {
+  setDebugText('#debugApiBase', API_BASE_URL);
+  await loadDebugMicrophones(false);
+  await loadModelDebugStatus();
+}
+
+async function loadDebugMicrophones(requestPermission = true) {
+  const select = $('#debugMicSelect');
+  if (!select || !navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) return;
+
+  try {
+    if (requestPermission && navigator.mediaDevices.getUserMedia) {
+      const permissionStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      permissionStream.getTracks().forEach(track => track.stop());
+    }
+
+    const currentValue = select.value;
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    const audioInputs = devices.filter(device => device.kind === 'audioinput');
+    select.innerHTML = '<option value="">系统默认麦克风</option>' + audioInputs.map((device, index) => {
+      const label = device.label || `麦克风 ${index + 1}`;
+      return `<option value="${device.deviceId}">${label}</option>`;
+    }).join('');
+
+    if (currentValue && audioInputs.some(device => device.deviceId === currentValue)) {
+      select.value = currentValue;
+    }
+
+    appendDebugLog(`麦克风设备：${audioInputs.map((device, index) => device.label || `麦克风 ${index + 1}`).join(' / ') || '未发现'}`);
+  } catch (error) {
+    appendDebugLog(`刷新麦克风列表失败：${error.message}`, 'error');
+  }
+}
+
+async function loadModelDebugStatus() {
+  try {
+    const info = await api.getSystemInfo();
+    const model = info.emotion_model || {};
+    const loaded = getActiveModelLoaded(model);
+    const cudaText = model.torch_cuda_available
+      ? `可用 ${model.torch_cuda_version || ''} ${model.cuda_device || ''}`.trim()
+      : '不可用';
+
+    setDebugText('#debugBackend', model.backend);
+    setDebugText('#debugDevice', model.device);
+    setDebugText('#debugCuda', cudaText);
+    setDebugText('#debugLoaded', loaded ? '已加载' : '未加载');
+    setDebugText('#debugModelId', getActiveModelId(model));
+    setDebugBadge('#modelDebugStatusBadge', loaded ? '模型已加载' : '模型未加载', loaded ? 'success' : 'warning');
+
+    if (model.sensevoice_load_error || model.caire_load_error) {
+      appendDebugLog(`模型加载错误：${model.sensevoice_load_error || model.caire_load_error}`, 'error');
+    } else {
+      appendDebugLog(`模型状态刷新：${model.backend || 'unknown'} / ${loaded ? 'loaded' : 'not loaded'}`);
+    }
+  } catch (error) {
+    setDebugBadge('#modelDebugStatusBadge', '后端不可用', 'danger');
+    appendDebugLog(`读取后端状态失败：${error.message}`, 'error');
+  }
+}
+
+async function preloadDebugModel() {
+  setDebugBadge('#modelDebugStatusBadge', '加载中', 'warning');
+  appendDebugLog('开始预加载情绪模型');
+
+  try {
+    const result = await api.preloadEmotionModel();
+    const model = result.emotion_model || {};
+    const loaded = getActiveModelLoaded(model);
+    setDebugBadge('#modelDebugStatusBadge', loaded ? '模型已加载' : '加载失败', loaded ? 'success' : 'danger');
+    appendDebugLog(`预加载完成：${model.backend || 'unknown'} / loaded=${result.loaded}`);
+    await loadModelDebugStatus();
+  } catch (error) {
+    setDebugBadge('#modelDebugStatusBadge', '加载失败', 'danger');
+    appendDebugLog(`预加载失败：${error.message}`, 'error');
+  }
+}
+
+async function ensureModelDebugSession() {
+  if (!state.user) {
+    throw new Error('请先在 Web 页面创建用户或登录');
+  }
+
+  if (!state.user.families || state.user.families.length === 0) {
+    const family = await api.createFamily('模型调试家庭');
+    state.user = await api.getMe();
+    localStorage.setItem('softerplease_user', JSON.stringify(state.user));
+    appendDebugLog(`已创建调试家庭：${family.family_id || family.id || 'unknown'}`);
+  }
+
+  if (state.modelDebugSession && state.modelDebugSession.session_id) {
+    return state.modelDebugSession;
+  }
+
+  const familyId = state.user.families[0].family_id;
+  const deviceId = 'web-model-debug-' + Math.random().toString(36).slice(2, 10);
+  state.modelDebugSession = await api.startSession(familyId, deviceId, 'web-model-debug');
+  appendDebugLog(`已创建调试会话：${state.modelDebugSession.session_id}`);
+  return state.modelDebugSession;
+}
+
+function updateDebugRecordTimer() {
+  if (!debugRecordStartedAt) return;
+  const seconds = Math.floor((Date.now() - debugRecordStartedAt) / 1000);
+  const minutes = Math.floor(seconds / 60).toString().padStart(2, '0');
+  const rest = (seconds % 60).toString().padStart(2, '0');
+  setDebugText('#debugRecordTimer', `${minutes}:${rest}`);
+}
+
+async function startDebugRecording() {
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    alert('当前浏览器不支持麦克风录音，请使用 Chrome/Edge 并通过 localhost 打开页面');
+    return;
+  }
+
+  try {
+    await ensureModelDebugSession();
+    debugRecordedChunks = [];
+    debugRecordedBlob = null;
+    debugWavBlob = null;
+    debugPeakLevel = 0;
+    debugRmsLevel = 0;
+    updateDebugMicLevel(0);
+    const selectedMic = $('#debugMicSelect')?.value || '';
+    const audioConstraints = selectedMic
+      ? { deviceId: { exact: selectedMic } }
+      : true;
+    debugStream = await navigator.mediaDevices.getUserMedia({ audio: audioConstraints });
+
+    debugAudioContext = new (window.AudioContext || window.webkitAudioContext)();
+    debugCaptureSampleRate = debugAudioContext.sampleRate;
+    debugAudioSource = debugAudioContext.createMediaStreamSource(debugStream);
+    debugAnalyser = debugAudioContext.createAnalyser();
+    debugAnalyser.fftSize = 2048;
+    debugLevelData = new Float32Array(debugAnalyser.fftSize);
+    debugAudioSource.connect(debugAnalyser);
+    debugLevelInterval = setInterval(pollDebugMicLevel, 120);
+
+    const mimeType = pickDebugRecordingMimeType();
+    debugMediaRecorder = new MediaRecorder(debugStream, mimeType ? { mimeType } : undefined);
+    debugMediaRecorder.ondataavailable = (event) => {
+      if (event.data && event.data.size > 0) {
+        debugRecordedChunks.push(event.data);
+      }
+    };
+    debugMediaRecorder.onstop = () => finalizeDebugRecording();
+    debugMediaRecorder.start(250);
+    debugRecordStartedAt = Date.now();
+    debugRecordTimerInterval = setInterval(updateDebugRecordTimer, 250);
+    updateDebugRecordTimer();
+
+    $('#startDebugRecordBtn')?.classList.add('hidden');
+    $('#stopDebugRecordBtn')?.classList.remove('hidden');
+    $('#analyzeDebugRecordBtn')?.setAttribute('disabled', 'disabled');
+    setDebugBadge('#debugRecordState', '录制中', 'warning');
+    setDebugBadge('#debugResultState', '录音中', 'warning');
+    const track = debugStream.getAudioTracks()[0];
+    appendDebugLog(`开始录音：${track?.label || '默认麦克风'} / ${debugMediaRecorder.mimeType || 'browser-default'}，输入采样率 ${debugCaptureSampleRate} Hz`);
+  } catch (error) {
+    cleanupDebugRecording();
+    appendDebugLog(`开始录音失败：${error.message}`, 'error');
+    alert('开始录音失败: ' + error.message);
+  }
+}
+
+function pickDebugRecordingMimeType() {
+  if (!window.MediaRecorder) return '';
+  const candidates = [
+    'audio/webm;codecs=opus',
+    'audio/webm',
+    'audio/ogg;codecs=opus',
+    'audio/mp4',
+  ];
+  return candidates.find(type => MediaRecorder.isTypeSupported(type)) || '';
+}
+
+function stopDebugRecording() {
+  if (debugRecordTimerInterval) {
+    clearInterval(debugRecordTimerInterval);
+    debugRecordTimerInterval = null;
+  }
+
+  if (debugMediaRecorder && debugMediaRecorder.state !== 'inactive') {
+    debugMediaRecorder.stop();
+  } else {
+    finalizeDebugRecording();
+  }
+}
+
+async function finalizeDebugRecording() {
+  cleanupDebugRecording();
+  $('#startDebugRecordBtn')?.classList.remove('hidden');
+  $('#stopDebugRecordBtn')?.classList.add('hidden');
+
+  try {
+    if (debugRecordedChunks.length === 0) {
+      throw new Error('浏览器没有产出录音数据，请检查麦克风权限');
+    }
+
+    const type = debugMediaRecorder?.mimeType || debugRecordedChunks[0]?.type || 'audio/webm';
+    debugRecordedBlob = new Blob(debugRecordedChunks, { type });
+    if (debugRecordedBlob.size < 1024) {
+      throw new Error(`录音文件过小（${debugRecordedBlob.size} bytes），请检查麦克风权限或输入设备`);
+    }
+
+    setDebugText('#debugAudioMeta', `原始录音：${type}，${(debugRecordedBlob.size / 1024).toFixed(1)} KB，正在转换 WAV`);
+    const originalPlayer = $('#debugOriginalAudioPlayer');
+    if (originalPlayer) {
+      originalPlayer.src = URL.createObjectURL(debugRecordedBlob);
+      originalPlayer.load();
+    }
+
+    debugWavBlob = await convertRecordedBlobToWav(debugRecordedBlob);
+    if (debugPeakLevel < 0.005) {
+      appendDebugLog('麦克风输入电平接近 0，这段录音很可能是静音。请检查浏览器麦克风权限和系统输入设备。', 'error');
+    }
+
+    const player = $('#debugAudioPlayer');
+    if (player) {
+      player.src = URL.createObjectURL(debugWavBlob);
+      player.load();
+    }
+
+    const duration = await getDebugWavDuration(debugWavBlob);
+    setDebugText('#debugAudioMeta', `原始录音：${type}，${(debugRecordedBlob.size / 1024).toFixed(1)} KB；提交/播放 WAV：${duration.toFixed(2)} 秒，${(debugWavBlob.size / 1024).toFixed(1)} KB / 16kHz mono；峰值 ${debugPeakLevel.toFixed(3)} / RMS ${debugRmsLevel.toFixed(3)}`);
+    $('#analyzeDebugRecordBtn')?.removeAttribute('disabled');
+    setDebugBadge('#debugRecordState', debugPeakLevel < 0.005 ? '近似静音' : '已停止', debugPeakLevel < 0.005 ? 'danger' : 'success');
+    appendDebugLog(`录音停止：原始 ${debugRecordedBlob.size} bytes，WAV ${debugWavBlob.size} bytes，peak=${debugPeakLevel.toFixed(4)} rms=${debugRmsLevel.toFixed(4)}`);
+    await analyzeDebugRecording();
+  } catch (error) {
+    setDebugBadge('#debugRecordState', '录音失败', 'danger');
+    setDebugBadge('#debugResultState', '录音失败', 'danger');
+    appendDebugLog(`录音失败：${error.message}`, 'error');
+  }
+}
+
+function cleanupDebugRecording() {
+  if (debugLevelInterval) {
+    clearInterval(debugLevelInterval);
+    debugLevelInterval = null;
+  }
+
+  if (debugRecordTimerInterval) {
+    clearInterval(debugRecordTimerInterval);
+    debugRecordTimerInterval = null;
+  }
+
+  if (debugAnalyser) {
+    debugAnalyser.disconnect();
+    debugAnalyser = null;
+  }
+
+  if (debugAudioSource) {
+    debugAudioSource.disconnect();
+    debugAudioSource = null;
+  }
+
+  if (debugAudioContext) {
+    debugAudioContext.close().catch(() => {});
+    debugAudioContext = null;
+  }
+
+  if (debugStream) {
+    debugStream.getTracks().forEach(track => track.stop());
+    debugStream = null;
+  }
+}
+
+function pollDebugMicLevel() {
+  if (!debugAnalyser || !debugLevelData) return;
+
+  debugAnalyser.getFloatTimeDomainData(debugLevelData);
+  let sumSquares = 0;
+  let peak = 0;
+  for (const sample of debugLevelData) {
+    const abs = Math.abs(sample);
+    if (abs > peak) peak = abs;
+    sumSquares += sample * sample;
+  }
+
+  const rms = Math.sqrt(sumSquares / debugLevelData.length);
+  debugPeakLevel = Math.max(debugPeakLevel, peak);
+  debugRmsLevel = Math.max(debugRmsLevel, rms);
+  updateDebugMicLevel(rms);
+}
+
+function updateDebugMicLevel(level) {
+  const normalized = Math.max(0, Math.min(1, level * 8));
+  const fill = $('#debugMicLevelFill');
+  if (fill) {
+    fill.style.width = `${(normalized * 100).toFixed(0)}%`;
+  }
+
+  const text = $('#debugMicLevelText');
+  if (text) {
+    text.textContent = level.toFixed(3);
+  }
+}
+
+async function convertRecordedBlobToWav(blob) {
+  const arrayBuffer = await blob.arrayBuffer();
+  const context = new (window.AudioContext || window.webkitAudioContext)();
+  const decoded = await context.decodeAudioData(arrayBuffer.slice(0));
+  const sampleRate = decoded.sampleRate;
+  const channelCount = decoded.numberOfChannels;
+  const mixed = new Float32Array(decoded.length);
+
+  for (let channel = 0; channel < channelCount; channel++) {
+    const data = decoded.getChannelData(channel);
+    for (let i = 0; i < data.length; i++) {
+      mixed[i] += data[i] / channelCount;
+    }
+  }
+
+  const resampled = resampleAudio(mixed, sampleRate, 16000);
+  await context.close();
+  return audioToWav(resampled, 16000);
+}
+
+async function getDebugWavDuration(blob) {
+  const size = blob.size;
+  const payloadBytes = Math.max(0, size - 44);
+  return payloadBytes / (16000 * 2);
+}
+
+async function handleDebugAudioUpload(event) {
+  const file = event.target.files?.[0];
+  if (!file) return;
+
+  try {
+    await ensureModelDebugSession();
+    debugWavBlob = null;
+    setDebugBadge('#debugRecordState', '文件转换中', 'warning');
+    setDebugBadge('#debugResultState', '文件转换中', 'warning');
+
+    const originalPlayer = $('#debugOriginalAudioPlayer');
+    if (originalPlayer) {
+      originalPlayer.src = URL.createObjectURL(file);
+      originalPlayer.load();
+    }
+
+    appendDebugLog(`选择上传音频：${file.name} / ${file.type || 'unknown'} / ${file.size} bytes`);
+    setDebugText('#debugAudioMeta', `上传原始音频：${file.name}，${(file.size / 1024).toFixed(1)} KB，正在转换为 16kHz mono WAV`);
+    debugWavBlob = await convertRecordedBlobToWav(file);
+    const player = $('#debugAudioPlayer');
+    if (player) {
+      player.src = URL.createObjectURL(debugWavBlob);
+      player.load();
+    }
+
+    setDebugText('#debugAudioMeta', `上传原始音频：${file.name}，${(file.size / 1024).toFixed(1)} KB；提交 WAV：${(debugWavBlob.size / 1024).toFixed(1)} KB / 16kHz mono`);
+    $('#analyzeDebugRecordBtn')?.removeAttribute('disabled');
+    setDebugBadge('#debugRecordState', '文件已就绪', 'success');
+    await analyzeDebugRecording();
+  } catch (error) {
+    setDebugBadge('#debugRecordState', '上传失败', 'danger');
+    setDebugBadge('#debugResultState', '上传失败', 'danger');
+    appendDebugLog(`上传音频处理失败：${error.message}`, 'error');
+    alert('上传音频处理失败: ' + error.message);
+  } finally {
+    event.target.value = '';
+  }
+}
+
+function resampleAudio(audioData, sourceRate, targetRate) {
+  if (sourceRate === targetRate) {
+    return audioData;
+  }
+
+  const ratio = sourceRate / targetRate;
+  const newLength = Math.max(1, Math.round(audioData.length / ratio));
+  const result = new Float32Array(newLength);
+
+  for (let i = 0; i < newLength; i++) {
+    const sourceIndex = i * ratio;
+    const left = Math.floor(sourceIndex);
+    const right = Math.min(left + 1, audioData.length - 1);
+    const weight = sourceIndex - left;
+    result[i] = audioData[left] * (1 - weight) + audioData[right] * weight;
+  }
+
+  return result;
+}
+
+async function analyzeDebugRecording() {
+  if (!debugWavBlob) {
+    alert('请先录制或上传一段音频');
+    return;
+  }
+
+  try {
+    const session = await ensureModelDebugSession();
+    const formData = new FormData();
+    formData.append('audio', debugWavBlob, 'debug-recording.wav');
+    formData.append('transcript', $('#debugTranscript')?.value || '');
+    formData.append('speaker_id', $('#debugSpeakerId')?.value || 'web_debug_user');
+
+    setDebugBadge('#debugResultState', '分析中', 'warning');
+    appendDebugLog('提交音频到模型分析接口');
+
+    const response = await fetch(`${API_BASE_URL}/v1/sessions/${session.session_id}/analyze`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${state.token}`,
+      },
+      body: formData,
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(errorText || `HTTP ${response.status}`);
+    }
+
+    const result = await response.json();
+    renderDebugResult(result);
+    setDebugBadge('#debugResultState', '分析完成', 'success');
+    appendDebugLog(`分析完成：value=${result.emotion_value} level=${result.emotion_level} backend=${result.model_backend}`);
+    await loadModelDebugStatus();
+  } catch (error) {
+    setDebugBadge('#debugResultState', '分析失败', 'danger');
+    appendDebugLog(`分析失败：${error.message}`, 'error');
+  }
+}
+
+function renderDebugResult(result) {
+  setDebugText('#debugEmotionValue', result.emotion_value);
+  setDebugText('#debugEmotionLevel', result.emotion_level);
+  setDebugText('#debugResultBackend', result.model_backend);
+  setDebugText('#debugConfidence', formatDebugValue(result.confidence));
+  setDebugText('#debugAngerScore', formatDebugValue(result.anger_score));
+  setDebugText('#debugSpeakerResult', `${result.speaker_id || '--'} (${formatDebugValue(result.speaker_confidence)})`);
+  renderDebugTable('#debugRawEmotions', result.raw_emotions);
+  renderDebugTable('#debugAcousticFeatures', result.acoustic_features);
+
+  const jsonEl = $('#debugResultJson');
+  if (jsonEl) {
+    jsonEl.textContent = JSON.stringify(result, null, 2);
+  }
+}
+
 // 事件监听
 function initEventListeners() {
   // 登录
@@ -943,6 +1480,19 @@ function initEventListeners() {
   // 会话控制
   $('#startSessionBtn')?.addEventListener('click', startSession);
   $('#endSessionBtn')?.addEventListener('click', endSession);
+
+  // 模型调试
+  $('#refreshModelStatusBtn')?.addEventListener('click', loadModelDebugStatus);
+  $('#preloadModelBtn')?.addEventListener('click', preloadDebugModel);
+  $('#refreshDebugMicsBtn')?.addEventListener('click', () => loadDebugMicrophones(true));
+  $('#startDebugRecordBtn')?.addEventListener('click', startDebugRecording);
+  $('#stopDebugRecordBtn')?.addEventListener('click', stopDebugRecording);
+  $('#analyzeDebugRecordBtn')?.addEventListener('click', analyzeDebugRecording);
+  $('#debugAudioFile')?.addEventListener('change', handleDebugAudioUpload);
+  $('#clearDebugLogBtn')?.addEventListener('click', () => {
+    const log = $('#debugLog');
+    if (log) log.innerHTML = '';
+  });
   
   // 模拟控制
   $('#simAngerScore')?.addEventListener('input', (e) => {

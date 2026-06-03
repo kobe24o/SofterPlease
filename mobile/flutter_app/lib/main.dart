@@ -70,6 +70,7 @@ class _MonitorPageState extends State<MonitorPage> {
   DailyReport? _dailyReport;
   RangeReport? _rangeReport;
   Map<String, dynamic>? _modelStatus;
+  String? _lastAudioDebug;
   final List<EmotionResult> _history = [];
 
   bool get _isLoggedIn => _token != null && _familyId != null;
@@ -342,25 +343,44 @@ class _MonitorPageState extends State<MonitorPage> {
       return;
     }
 
-    final dir = await getTemporaryDirectory();
-    final path = '${dir.path}/softerplease_${DateTime.now().millisecondsSinceEpoch}.wav';
-    await _recorder.start(
-      const RecordConfig(
-        encoder: AudioEncoder.wav,
-        sampleRate: 16000,
-        numChannels: 1,
-      ),
-      path: path,
-    );
+    final supportsWav = await _recorder.isEncoderSupported(AudioEncoder.wav);
+    if (!supportsWav) {
+      _showSnack('当前设备不支持 WAV 录音编码');
+      return;
+    }
 
-    setState(() {
-      _recordPath = path;
-      _isRecording = true;
-    });
+    try {
+      final dir = await getTemporaryDirectory();
+      final path = '${dir.path}/softerplease_${DateTime.now().millisecondsSinceEpoch}.wav';
+      await _recorder.start(
+        const RecordConfig(
+          encoder: AudioEncoder.wav,
+          sampleRate: 16000,
+          numChannels: 1,
+        ),
+        path: path,
+      );
+
+      setState(() {
+        _recordPath = path;
+        _isRecording = true;
+        _lastAudioDebug = '录音中：${_shortPath(path)}';
+      });
+    } catch (error) {
+      _showSnack('开始录音失败：${_formatError(error)}');
+    }
   }
 
   Future<void> _stopAndAnalyze() async {
-    final stoppedPath = await _recorder.stop();
+    String? stoppedPath;
+    try {
+      stoppedPath = await _recorder.stop();
+    } catch (error) {
+      setState(() => _isRecording = false);
+      _showSnack('停止录音失败：${_formatError(error)}');
+      return;
+    }
+
     setState(() {
       _isRecording = false;
       _isAnalyzing = true;
@@ -372,6 +392,17 @@ class _MonitorPageState extends State<MonitorPage> {
       if (path == null || !File(path).existsSync()) {
         throw StateError('录音文件不存在');
       }
+
+      final audioFile = File(path);
+      final audioBytes = audioFile.lengthSync();
+      if (audioBytes < 1024) {
+        throw StateError('录音文件过小（$audioBytes bytes），请检查麦克风权限或输入设备');
+      }
+
+      final audioSeconds = _estimateWavSeconds(audioBytes);
+      setState(() {
+        _lastAudioDebug = '本次录音：${audioSeconds.toStringAsFixed(2)} 秒，${(audioBytes / 1024).toStringAsFixed(1)} KB，16kHz mono WAV，${_shortPath(path)}';
+      });
 
       final formData = FormData.fromMap({
         'audio': await MultipartFile.fromFile(path, filename: 'segment.wav'),
@@ -388,10 +419,27 @@ class _MonitorPageState extends State<MonitorPage> {
       await _refreshStats(showError: false);
       await _loadSystemInfo(showError: false);
     } catch (error) {
+      setState(() {
+        _lastAudioDebug = '录音/分析异常：${_formatError(error)}';
+      });
       _showSnack('分析失败：${_formatError(error)}');
     } finally {
       if (mounted) setState(() => _isAnalyzing = false);
     }
+  }
+
+  double _estimateWavSeconds(int bytes) {
+    const headerBytes = 44;
+    const bytesPerSecond = 16000 * 2;
+    final payloadBytes = bytes > headerBytes ? bytes - headerBytes : 0;
+    return payloadBytes / bytesPerSecond;
+  }
+
+  String _shortPath(String path) {
+    final normalized = path.replaceAll('\\', '/');
+    final parts = normalized.split('/');
+    if (parts.length <= 2) return normalized;
+    return '${parts[parts.length - 2]}/${parts.last}';
   }
 
   Future<void> _logout() async {
@@ -482,6 +530,7 @@ class _MonitorPageState extends State<MonitorPage> {
           result: result,
           isRecording: _isRecording,
           isAnalyzing: _isAnalyzing,
+          audioDebug: _lastAudioDebug,
         ),
         const SizedBox(height: 16),
         TextField(
@@ -680,6 +729,7 @@ class _StatusPanel extends StatelessWidget {
     required this.result,
     required this.isRecording,
     required this.isAnalyzing,
+    required this.audioDebug,
   });
 
   final String familyName;
@@ -688,6 +738,7 @@ class _StatusPanel extends StatelessWidget {
   final EmotionResult? result;
   final bool isRecording;
   final bool isAnalyzing;
+  final String? audioDebug;
 
   @override
   Widget build(BuildContext context) {
@@ -765,6 +816,13 @@ class _StatusPanel extends StatelessWidget {
                 'Top: ${currentResult.topLabels.entries.take(3).map((e) => '${e.key} ${e.value.toStringAsFixed(2)}').join(' / ')}',
                 style: Theme.of(context).textTheme.bodySmall,
               ),
+          ],
+          if (audioDebug != null) ...[
+            const SizedBox(height: 12),
+            Text(
+              audioDebug!,
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(color: Colors.black54),
+            ),
           ],
         ],
       ),

@@ -51,6 +51,10 @@
               <span class="icon">👨‍👩‍👧‍👦</span>
               <span>家庭成员</span>
             </a>
+            <a href="#" class="nav-item" data-page="modelDebug">
+              <span class="icon">M</span>
+              <span>模型调试</span>
+            </a>
             <a href="#" class="nav-item" data-page="settings">
               <span class="icon">⚙️</span>
               <span>设置</span>
@@ -279,6 +283,154 @@
               </div>
               <p class="invite-hint">分享此邀请码给家人，让他们加入</p>
             </div>
+          </div>
+
+          <!-- 模型调试页面 -->
+          <div id="modelDebugPage" class="content-page hidden">
+            <header class="page-header">
+              <h1>模型调试</h1>
+              <div class="model-debug-actions">
+                <button id="refreshModelStatusBtn" class="btn-secondary">刷新状态</button>
+                <button id="preloadModelBtn" class="btn-primary">预加载模型</button>
+              </div>
+            </header>
+
+            <div class="model-debug-grid">
+              <section class="model-debug-panel">
+                <div class="panel-heading">
+                  <h3>后端与模型</h3>
+                  <span id="modelDebugStatusBadge" class="status-badge">未检测</span>
+                </div>
+                <dl class="debug-kv-list">
+                  <div>
+                    <dt>后端地址</dt>
+                    <dd id="debugApiBase">--</dd>
+                  </div>
+                  <div>
+                    <dt>当前算法</dt>
+                    <dd id="debugBackend">--</dd>
+                  </div>
+                  <div>
+                    <dt>设备</dt>
+                    <dd id="debugDevice">--</dd>
+                  </div>
+                  <div>
+                    <dt>CUDA</dt>
+                    <dd id="debugCuda">--</dd>
+                  </div>
+                  <div>
+                    <dt>模型加载</dt>
+                    <dd id="debugLoaded">--</dd>
+                  </div>
+                  <div>
+                    <dt>模型 ID</dt>
+                    <dd id="debugModelId">--</dd>
+                  </div>
+                </dl>
+              </section>
+
+              <section class="model-debug-panel">
+                <div class="panel-heading">
+                  <h3>录音测试</h3>
+                  <span id="debugRecordState" class="status-badge">空闲</span>
+                </div>
+                <div class="debug-form">
+                  <label>
+                    说话人
+                    <input id="debugSpeakerId" type="text" value="web_debug_user" />
+                  </label>
+                  <label>
+                    文本备注
+                    <input id="debugTranscript" type="text" placeholder="可选，填入你刚才说的话" />
+                  </label>
+                  <label>
+                    麦克风
+                    <select id="debugMicSelect">
+                      <option value="">系统默认麦克风</option>
+                    </select>
+                  </label>
+                  <label>
+                    设备
+                    <button id="refreshDebugMicsBtn" type="button" class="btn-secondary">刷新麦克风</button>
+                  </label>
+                </div>
+                <div class="debug-recorder">
+                  <button id="startDebugRecordBtn" class="btn-primary">开始录制</button>
+                  <button id="stopDebugRecordBtn" class="btn-danger hidden">停止并分析</button>
+                  <button id="analyzeDebugRecordBtn" class="btn-secondary" disabled>重新分析</button>
+                  <span id="debugRecordTimer">00:00</span>
+                </div>
+                <div class="debug-level">
+                  <span>麦克风输入</span>
+                  <div class="debug-level-bar">
+                    <div id="debugMicLevelFill"></div>
+                  </div>
+                  <strong id="debugMicLevelText">0.000</strong>
+                </div>
+                <div class="debug-upload">
+                  <label for="debugAudioFile">上传音频文件</label>
+                  <input id="debugAudioFile" type="file" accept="audio/*,.wav,.mp3,.m4a,.webm,.ogg" />
+                </div>
+                <audio id="debugAudioPlayer" controls></audio>
+                <p class="debug-hint">提交给模型的 WAV</p>
+                <audio id="debugOriginalAudioPlayer" controls></audio>
+                <p class="debug-hint">浏览器原始录音</p>
+                <p id="debugAudioMeta" class="debug-hint">录音后会在这里显示原始音频和提交给模型的 WAV 信息。</p>
+              </section>
+            </div>
+
+            <section class="model-debug-panel full-width">
+              <div class="panel-heading">
+                <h3>预测结果</h3>
+                <span id="debugResultState" class="status-badge">等待录音</span>
+              </div>
+              <div class="debug-result-grid">
+                <div class="debug-metric">
+                  <span>情绪值</span>
+                  <strong id="debugEmotionValue">--</strong>
+                </div>
+                <div class="debug-metric">
+                  <span>情绪等级</span>
+                  <strong id="debugEmotionLevel">--</strong>
+                </div>
+                <div class="debug-metric">
+                  <span>模型后端</span>
+                  <strong id="debugResultBackend">--</strong>
+                </div>
+                <div class="debug-metric">
+                  <span>置信度</span>
+                  <strong id="debugConfidence">--</strong>
+                </div>
+                <div class="debug-metric">
+                  <span>愤怒分数</span>
+                  <strong id="debugAngerScore">--</strong>
+                </div>
+                <div class="debug-metric">
+                  <span>说话人</span>
+                  <strong id="debugSpeakerResult">--</strong>
+                </div>
+              </div>
+              <div class="debug-columns">
+                <div>
+                  <h4>原始情绪输出</h4>
+                  <div id="debugRawEmotions" class="debug-table"></div>
+                </div>
+                <div>
+                  <h4>声学特征</h4>
+                  <div id="debugAcousticFeatures" class="debug-table"></div>
+                </div>
+              </div>
+              <h4>完整 Debug JSON</h4>
+              <pre id="debugResultJson" class="debug-json">{}</pre>
+            </section>
+
+            <section class="model-debug-panel full-width">
+              <div class="panel-heading">
+                <h3>调试日志</h3>
+                <button id="clearDebugLogBtn" class="btn-small">清空</button>
+              </div>
+              <div id="debugLog" class="debug-log"></div>
+            </section>
           </div>
 
           <!-- 设置页面 -->
