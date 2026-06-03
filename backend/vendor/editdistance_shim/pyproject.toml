@@ -1,0 +1,13 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "editdistance"
+version = "0.8.1"
+description = "Pure Python editdistance shim for SofterPlease SenseVoice runtime"
+requires-python = ">=3.9"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["editdistance"]

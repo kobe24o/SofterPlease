@@ -17,6 +17,8 @@ import numpy as np
 from typing import Dict, Any, Optional
 from dataclasses import dataclass, field
 import librosa
+import soundfile as sf
+import tempfile
 import torch
 import torch.nn as nn
 
@@ -131,6 +133,7 @@ class EmotionAnalyzer:
     ]
 
     CAIRE_MODEL_ID = "CAiRE/SER-wav2vec2-large-xlsr-53-eng-zho-all-age"
+    SENSEVOICE_MODEL_ID = "iic/SenseVoiceSmall"
     CAIRE_LABELS = [
         "sadness", "fear", "angry", "happiness", "disgust", "neutral", "surprise",
         "positive", "negative", "excitement", "frustrated", "other", "unknown",
@@ -160,12 +163,16 @@ class EmotionAnalyzer:
         self.n_mels = 128
         self.hop_length = 512
         self.n_fft = 2048
-        self.backend = os.getenv("EMOTION_BACKEND", "caire").strip().lower()
+        self.backend = os.getenv("EMOTION_BACKEND", "sensevoice").strip().lower()
         self.caire_model_id = os.getenv("CAIRE_MODEL_ID", self.CAIRE_MODEL_ID)
+        self.sensevoice_model_id = os.getenv("SENSEVOICE_MODEL_ID", self.SENSEVOICE_MODEL_ID)
         self._caire_model = None
         self._caire_feature_extractor = None
         self._caire_load_attempted = False
         self._caire_load_error = None
+        self._sensevoice_model = None
+        self._sensevoice_load_attempted = False
+        self._sensevoice_load_error = None
         logger.info(
             "Emotion backend=%s device=%s torch_cuda_available=%s",
             self.backend,
@@ -233,6 +240,10 @@ class EmotionAnalyzer:
             "torch_cuda_available": torch.cuda.is_available(),
             "torch_cuda_version": torch.version.cuda,
             "cuda_device": cuda_name,
+            "sensevoice_model_id": self.sensevoice_model_id,
+            "sensevoice_loaded": self._sensevoice_model is not None,
+            "sensevoice_load_attempted": self._sensevoice_load_attempted,
+            "sensevoice_load_error": self._sensevoice_load_error,
             "caire_model_id": self.caire_model_id,
             "caire_loaded": self._caire_model is not None,
             "caire_load_attempted": self._caire_load_attempted,
@@ -243,9 +254,38 @@ class EmotionAnalyzer:
 
     def ensure_model_loaded(self) -> bool:
         """Eagerly load the configured emotion model when supported."""
+        if self.backend == "sensevoice":
+            return self._ensure_sensevoice_model()
         if self.backend == "caire":
             return self._ensure_caire_model()
         return self.use_ml_model or self.backend == "rule"
+
+    def _ensure_sensevoice_model(self) -> bool:
+        """Lazy-load Alibaba/FunAudioLLM SenseVoiceSmall."""
+        if self._sensevoice_model is not None:
+            return True
+        if self._sensevoice_load_attempted:
+            return False
+
+        self._sensevoice_load_attempted = True
+        self._sensevoice_load_error = None
+        try:
+            from funasr import AutoModel
+
+            device = "cuda:0" if self.device.type == "cuda" and torch.cuda.is_available() else "cpu"
+            self._sensevoice_model = AutoModel(
+                model=self.sensevoice_model_id,
+                trust_remote_code=True,
+                device=device,
+                disable_update=True,
+            )
+            logger.info("Loaded SenseVoice model: %s on %s", self.sensevoice_model_id, device)
+            return True
+        except Exception as exc:
+            self._sensevoice_load_error = str(exc)
+            logger.exception("Failed to load SenseVoice model, falling back to rules")
+            self._sensevoice_model = None
+            return False
 
     def _ensure_caire_model(self) -> bool:
         """延迟加载 CAiRE 模型，避免服务启动时阻塞或强依赖 transformers。"""
@@ -752,12 +792,103 @@ class EmotionAnalyzer:
         acoustic_features = self._extract_acoustic_features(audio, self.sample_rate)
         
         # 使用 CAiRE、旧本地模型或规则引擎
+        if self.backend == "sensevoice" and self._ensure_sensevoice_model():
+            return self._sensevoice_based_analysis(audio, transcript, acoustic_features)
         if self.backend == "caire" and self._ensure_caire_model():
             return self._caire_based_analysis(audio, transcript, acoustic_features)
         if self.use_ml_model and self.model:
             return self._ml_based_analysis(audio, transcript, acoustic_features)
         else:
             return self._rule_based_analysis(audio, transcript, acoustic_features)
+
+    def _sensevoice_based_analysis(
+        self,
+        audio: np.ndarray,
+        transcript: str,
+        acoustic_features: Dict[str, float],
+    ) -> EmotionAnalysisResult:
+        """Use SenseVoiceSmall emotion tags and map them to -1/0/1."""
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temp_file:
+            temp_path = temp_file.name
+
+        try:
+            sf.write(temp_path, audio.astype(np.float32), self.sample_rate)
+            result = self._sensevoice_model.generate(
+                input=temp_path,
+                cache={},
+                language="auto",
+                use_itn=True,
+                batch_size_s=30,
+            )
+        finally:
+            try:
+                os.remove(temp_path)
+            except OSError:
+                pass
+
+        raw_text = ""
+        if isinstance(result, list) and result:
+            item = result[0]
+            raw_text = str(item.get("text", "")) if isinstance(item, dict) else str(item)
+        else:
+            raw_text = str(result)
+
+        emotion_tag = self._extract_sensevoice_emotion(raw_text)
+        raw_emotions = self._sensevoice_raw_scores(emotion_tag)
+        anger_score = raw_emotions.get("angry", 0.0)
+        sad_score = raw_emotions.get("sad", 0.0)
+        positive_score = raw_emotions.get("happy", 0.0)
+        negative_score = max(sad_score, anger_score)
+        neutral_score = raw_emotions.get("neutral", 0.0)
+        valence = float(np.clip(positive_score - negative_score, -1.0, 1.0))
+
+        if emotion_tag == "happy":
+            emotion_value = 1
+        elif emotion_tag in {"angry", "sad"}:
+            emotion_value = -1
+        elif neutral_score >= max(positive_score, negative_score):
+            emotion_value = 0
+        else:
+            emotion_value = self._valence_to_emotion_value(valence, neutral_margin=0.15)
+
+        arousal = 0.75 if emotion_tag == "angry" else 0.55 if emotion_tag == "happy" else 0.35
+        stress = 0.8 if emotion_tag == "angry" else 0.55 if emotion_tag == "sad" else 0.15
+        emotion_intensity = float(np.clip(max(anger_score, stress * 0.7), 0.0, 1.0))
+
+        return EmotionAnalysisResult(
+            anger_score=float(np.clip(anger_score, 0.0, 1.0)),
+            emotion_level=self._get_emotion_level(emotion_intensity),
+            emotion_value=emotion_value,
+            valence=valence,
+            arousal=float(np.clip(arousal, 0.0, 1.0)),
+            dominance=float(np.clip(0.5 + anger_score * 0.25 - sad_score * 0.2, 0.0, 1.0)),
+            stress=float(np.clip(stress, 0.0, 1.0)),
+            impatience=float(np.clip(anger_score * 0.75, 0.0, 1.0)),
+            acoustic_features=acoustic_features,
+            confidence=float(np.clip(max(raw_emotions.values()), 0.0, 1.0)),
+            model_backend="sensevoice",
+            raw_emotions=raw_emotions,
+        )
+
+    def _extract_sensevoice_emotion(self, raw_text: str) -> str:
+        text = raw_text.upper()
+        if "<|HAPPY|>" in text or "|HAPPY|" in text or "HAPPY" in text:
+            return "happy"
+        if "<|ANGRY|>" in text or "|ANGRY|" in text or "ANGRY" in text:
+            return "angry"
+        if "<|SAD|>" in text or "|SAD|" in text or "SAD" in text:
+            return "sad"
+        return "neutral"
+
+    def _sensevoice_raw_scores(self, emotion_tag: str) -> Dict[str, float]:
+        scores = {
+            "happy": 0.02,
+            "sad": 0.02,
+            "angry": 0.02,
+            "neutral": 0.02,
+        }
+        scores[emotion_tag if emotion_tag in scores else "neutral"] = 0.9
+        return scores
 
     def _caire_based_analysis(
         self,

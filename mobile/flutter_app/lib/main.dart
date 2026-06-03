@@ -53,6 +53,7 @@ class _MonitorPageState extends State<MonitorPage> {
   final _recorder = AudioRecorder();
   late final Dio _dio;
 
+  int _tabIndex = 0;
   String? _token;
   String? _userId;
   String? _nickname;
@@ -70,6 +71,8 @@ class _MonitorPageState extends State<MonitorPage> {
   RangeReport? _rangeReport;
   Map<String, dynamic>? _modelStatus;
   final List<EmotionResult> _history = [];
+
+  bool get _isLoggedIn => _token != null && _familyId != null;
 
   @override
   void initState() {
@@ -100,6 +103,9 @@ class _MonitorPageState extends State<MonitorPage> {
     final apiBaseUrl = prefs.getString('api_base_url') ?? _defaultBaseUrl;
     final token = prefs.getString('token');
     final userId = prefs.getString('user_id');
+    final nickname = prefs.getString('nickname');
+    final familyId = prefs.getString('family_id');
+    final familyName = prefs.getString('family_name');
 
     _apiBaseUrlController.text = apiBaseUrl;
     _dio.options.baseUrl = apiBaseUrl;
@@ -107,11 +113,13 @@ class _MonitorPageState extends State<MonitorPage> {
     if (token != null && userId != null) {
       _token = token;
       _userId = userId;
+      _nickname = nickname;
+      _familyId = familyId;
+      _familyName = familyName;
       _setAuthHeader(token);
       await _syncUserFromServer(showError: false);
-    } else {
-      await _loadSystemInfo(showError: false);
     }
+    await _loadSystemInfo(showError: false);
 
     if (mounted) {
       setState(() => _isLoading = false);
@@ -138,6 +146,19 @@ class _MonitorPageState extends State<MonitorPage> {
     await prefs.setString('api_base_url', baseUrl);
   }
 
+  Future<void> _connectServer() async {
+    setState(() => _isLoading = true);
+    try {
+      await _saveBaseUrl();
+      await _loadSystemInfo(showError: true);
+      _showSnack('服务器已连接');
+    } catch (error) {
+      _showSnack('连接失败：${_formatError(error)}');
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
+    }
+  }
+
   Future<void> _registerAndLogin() async {
     final nickname = _nicknameController.text.trim();
     if (nickname.isEmpty) {
@@ -158,13 +179,12 @@ class _MonitorPageState extends State<MonitorPage> {
       final userId = create.data['user_id'] as String;
       final login = await _dio.post('/v1/auth/login', data: {'user_id': userId});
       await _applyLogin(login.data as Map<String, dynamic>);
-      await _syncUserFromServer();
+      await _syncUserFromServer(showError: false);
+      setState(() => _tabIndex = 0);
     } catch (error) {
       _showSnack('注册或登录失败：${_formatError(error)}');
     } finally {
-      if (mounted) {
-        setState(() => _isLoading = false);
-      }
+      if (mounted) setState(() => _isLoading = false);
     }
   }
 
@@ -196,9 +216,7 @@ class _MonitorPageState extends State<MonitorPage> {
     await prefs.setString('user_id', _userId!);
     await prefs.setString('family_id', _familyId!);
     await prefs.setString('family_name', _familyName!);
-    if (_nickname != null) {
-      await prefs.setString('nickname', _nickname!);
-    }
+    if (_nickname != null) await prefs.setString('nickname', _nickname!);
   }
 
   Future<void> _syncUserFromServer({bool showError = true}) async {
@@ -210,9 +228,7 @@ class _MonitorPageState extends State<MonitorPage> {
       await _loadSystemInfo(showError: false);
       if (mounted) setState(() {});
     } catch (error) {
-      if (showError) {
-        _showSnack('同步用户信息失败：${_formatError(error)}');
-      }
+      if (showError) _showSnack('同步用户信息失败：${_formatError(error)}');
     }
   }
 
@@ -223,26 +239,22 @@ class _MonitorPageState extends State<MonitorPage> {
       _modelStatus = data['emotion_model'] as Map<String, dynamic>?;
       if (mounted) setState(() {});
     } catch (error) {
-      if (showError) {
-        _showSnack('读取模型状态失败：${_formatError(error)}');
-      }
+      if (showError) _showSnack('读取模型状态失败：${_formatError(error)}');
     }
   }
 
   Future<void> _preloadModel() async {
     setState(() => _isModelLoading = true);
     try {
+      await _saveBaseUrl();
       final response = await _dio.post('/v1/system/emotion-model/load');
       final data = response.data as Map<String, dynamic>;
       _modelStatus = data['emotion_model'] as Map<String, dynamic>?;
-      final loaded = data['loaded'] == true;
-      _showSnack(loaded ? 'CAiRE 模型已加载' : '模型未加载，请查看状态错误');
+      _showSnack(data['loaded'] == true ? '模型已加载' : '模型未加载，请查看状态错误');
     } catch (error) {
       _showSnack('预加载模型失败：${_formatError(error)}');
     } finally {
-      if (mounted) {
-        setState(() => _isModelLoading = false);
-      }
+      if (mounted) setState(() => _isModelLoading = false);
     }
   }
 
@@ -269,14 +281,16 @@ class _MonitorPageState extends State<MonitorPage> {
       _rangeReport = RangeReport.fromJson(responses[2].data as Map<String, dynamic>);
       if (mounted) setState(() {});
     } catch (error) {
-      if (showError) {
-        _showSnack('刷新统计失败：${_formatError(error)}');
-      }
+      if (showError) _showSnack('刷新统计失败：${_formatError(error)}');
     }
   }
 
   Future<void> _startBackendSession() async {
-    if (_familyId == null) return;
+    if (!_isLoggedIn) {
+      _showSnack('请先在“我的”页面连接服务器并注册');
+      setState(() => _tabIndex = 2);
+      return;
+    }
     setState(() => _isLoading = true);
     try {
       final response = await _dio.post('/v1/sessions/start', data: {
@@ -289,9 +303,7 @@ class _MonitorPageState extends State<MonitorPage> {
     } catch (error) {
       _showSnack('开始会话失败：${_formatError(error)}');
     } finally {
-      if (mounted) {
-        setState(() => _isLoading = false);
-      }
+      if (mounted) setState(() => _isLoading = false);
     }
   }
 
@@ -371,18 +383,14 @@ class _MonitorPageState extends State<MonitorPage> {
       setState(() {
         _latestResult = result;
         _history.insert(0, result);
-        if (_history.length > 12) {
-          _history.removeLast();
-        }
+        if (_history.length > 12) _history.removeLast();
       });
       await _refreshStats(showError: false);
       await _loadSystemInfo(showError: false);
     } catch (error) {
       _showSnack('分析失败：${_formatError(error)}');
     } finally {
-      if (mounted) {
-        setState(() => _isAnalyzing = false);
-      }
+      if (mounted) setState(() => _isAnalyzing = false);
     }
   }
 
@@ -390,9 +398,7 @@ class _MonitorPageState extends State<MonitorPage> {
     final prefs = await SharedPreferences.getInstance();
     final apiBaseUrl = _apiBaseUrlController.text.trim();
     await prefs.clear();
-    if (apiBaseUrl.isNotEmpty) {
-      await prefs.setString('api_base_url', apiBaseUrl);
-    }
+    if (apiBaseUrl.isNotEmpty) await prefs.setString('api_base_url', apiBaseUrl);
     _dio.options.headers.remove('Authorization');
     setState(() {
       _token = null;
@@ -417,9 +423,7 @@ class _MonitorPageState extends State<MonitorPage> {
   String _formatError(Object error) {
     if (error is DioException) {
       final data = error.response?.data;
-      if (data is Map && data['detail'] != null) {
-        return data['detail'].toString();
-      }
+      if (data is Map && data['detail'] != null) return data['detail'].toString();
       return error.message ?? error.type.name;
     }
     return error.toString();
@@ -434,182 +438,236 @@ class _MonitorPageState extends State<MonitorPage> {
 
   @override
   Widget build(BuildContext context) {
-    if (_isLoading) {
-      return const Scaffold(body: Center(child: CircularProgressIndicator()));
-    }
+    final pages = [_buildMonitor(), _buildStats(), _buildProfile()];
 
     return Scaffold(
       appBar: AppBar(
         title: const Text('SofterPlease'),
         actions: [
-          if (_token != null)
-            IconButton(
-              onPressed: () async {
-                await _syncUserFromServer();
-                await _refreshStats();
-                await _loadSystemInfo();
-              },
-              tooltip: '同步',
-              icon: const Icon(Icons.sync),
-            ),
-          if (_token != null)
-            IconButton(
-              onPressed: _logout,
-              tooltip: '退出',
-              icon: const Icon(Icons.logout),
-            ),
+          IconButton(
+            onPressed: () async {
+              await _loadSystemInfo(showError: false);
+              await _syncUserFromServer(showError: false);
+              await _refreshStats(showError: false);
+            },
+            tooltip: '刷新',
+            icon: const Icon(Icons.sync),
+          ),
         ],
       ),
       body: SafeArea(
-        child: _token == null ? _buildRegister() : _buildMonitor(),
+        child: _isLoading ? const Center(child: CircularProgressIndicator()) : pages[_tabIndex],
       ),
-    );
-  }
-
-  Widget _buildRegister() {
-    return ListView(
-      padding: const EdgeInsets.all(20),
-      children: [
-        const SizedBox(height: 32),
-        const Icon(Icons.favorite, size: 72, color: Color(0xFF2E7D64)),
-        const SizedBox(height: 16),
-        const Text(
-          '让家庭沟通更温柔',
-          textAlign: TextAlign.center,
-          style: TextStyle(fontSize: 24, fontWeight: FontWeight.w700),
-        ),
-        const SizedBox(height: 32),
-        TextField(
-          controller: _apiBaseUrlController,
-          decoration: const InputDecoration(
-            labelText: '后端地址',
-            prefixIcon: Icon(Icons.cloud_queue),
-            border: OutlineInputBorder(),
-          ),
-          keyboardType: TextInputType.url,
-        ),
-        const SizedBox(height: 16),
-        TextField(
-          controller: _nicknameController,
-          decoration: const InputDecoration(
-            labelText: '昵称',
-            prefixIcon: Icon(Icons.person_outline),
-            border: OutlineInputBorder(),
-          ),
-        ),
-        const SizedBox(height: 16),
-        TextField(
-          controller: _phoneController,
-          decoration: const InputDecoration(
-            labelText: '手机号（可选）',
-            prefixIcon: Icon(Icons.phone_outlined),
-            border: OutlineInputBorder(),
-          ),
-          keyboardType: TextInputType.phone,
-        ),
-        const SizedBox(height: 16),
-        TextField(
-          controller: _emailController,
-          decoration: const InputDecoration(
-            labelText: '邮箱（可选）',
-            prefixIcon: Icon(Icons.mail_outline),
-            border: OutlineInputBorder(),
-          ),
-          keyboardType: TextInputType.emailAddress,
-        ),
-        const SizedBox(height: 16),
-        FilledButton.icon(
-          onPressed: _registerAndLogin,
-          icon: const Icon(Icons.arrow_forward),
-          label: const Text('注册并进入'),
-        ),
-        const SizedBox(height: 16),
-        Text(
-          '手机连家庭 WiFi 时请使用电脑局域网 IP，例如 http://192.168.1.10:8000',
-          textAlign: TextAlign.center,
-          style: Theme.of(context).textTheme.bodySmall,
-        ),
-      ],
+      bottomNavigationBar: NavigationBar(
+        selectedIndex: _tabIndex,
+        onDestinationSelected: (index) => setState(() => _tabIndex = index),
+        destinations: const [
+          NavigationDestination(icon: Icon(Icons.mic), label: '监测'),
+          NavigationDestination(icon: Icon(Icons.bar_chart), label: '统计'),
+          NavigationDestination(icon: Icon(Icons.person), label: '我的'),
+        ],
+      ),
     );
   }
 
   Widget _buildMonitor() {
     final result = _latestResult;
+    return ListView(
+      padding: const EdgeInsets.all(16),
+      children: [
+        _StatusPanel(
+          familyName: _familyName ?? '未连接家庭',
+          nickname: _nickname ?? '游客模式',
+          sessionId: _sessionId,
+          result: result,
+          isRecording: _isRecording,
+          isAnalyzing: _isAnalyzing,
+        ),
+        const SizedBox(height: 16),
+        TextField(
+          controller: _transcriptController,
+          decoration: const InputDecoration(
+            labelText: '可选转写文本',
+            hintText: '例如：我们慢慢说，先别着急',
+            prefixIcon: Icon(Icons.notes_outlined),
+            border: OutlineInputBorder(),
+          ),
+          minLines: 1,
+          maxLines: 3,
+        ),
+        const SizedBox(height: 16),
+        if (_sessionId == null)
+          FilledButton.icon(
+            onPressed: _startBackendSession,
+            icon: const Icon(Icons.play_arrow),
+            label: Text(_isLoggedIn ? '开始会话' : '去我的页面连接服务器'),
+          )
+        else
+          Row(
+            children: [
+              Expanded(
+                child: FilledButton.icon(
+                  onPressed: _isAnalyzing ? null : _toggleRecording,
+                  icon: Icon(_isRecording ? Icons.stop : Icons.mic),
+                  label: Text(_isRecording ? '停止并分析' : '录一段语音'),
+                ),
+              ),
+              const SizedBox(width: 12),
+              IconButton.filledTonal(
+                onPressed: _isRecording ? null : _endBackendSession,
+                tooltip: '结束会话',
+                icon: const Icon(Icons.close),
+              ),
+            ],
+          ),
+        const SizedBox(height: 16),
+        _ModelPanel(
+          status: _modelStatus,
+          latestBackend: result?.modelBackend,
+          isLoading: _isModelLoading,
+          onRefresh: () => _loadSystemInfo(),
+          onPreload: _preloadModel,
+        ),
+        const SizedBox(height: 20),
+        if (_history.isNotEmpty) Text('最近分析', style: Theme.of(context).textTheme.titleMedium),
+        const SizedBox(height: 8),
+        for (final item in _history) _HistoryTile(result: item),
+      ],
+    );
+  }
+
+  Widget _buildStats() {
     return RefreshIndicator(
-      onRefresh: () async {
-        await _syncUserFromServer();
-        await _refreshStats();
-        await _loadSystemInfo();
-      },
+      onRefresh: () => _refreshStats(),
       child: ListView(
         padding: const EdgeInsets.all(16),
         children: [
-          _StatusPanel(
-            familyName: _familyName ?? '我的家庭',
-            nickname: _nickname ?? '家庭成员',
-            sessionId: _sessionId,
-            result: result,
-            isRecording: _isRecording,
-            isAnalyzing: _isAnalyzing,
-          ),
-          const SizedBox(height: 16),
-          TextField(
-            controller: _transcriptController,
-            decoration: const InputDecoration(
-              labelText: '可选转写文本',
-              hintText: '例如：我们慢慢说，先别着急',
-              prefixIcon: Icon(Icons.notes_outlined),
-              border: OutlineInputBorder(),
-            ),
-            minLines: 1,
-            maxLines: 3,
-          ),
-          const SizedBox(height: 16),
-          if (_sessionId == null)
-            FilledButton.icon(
-              onPressed: _startBackendSession,
-              icon: const Icon(Icons.play_arrow),
-              label: const Text('开始会话'),
+          if (!_isLoggedIn)
+            _InfoPanel(
+              title: '统计将在连接后同步',
+              body: '你可以先浏览界面。连接服务器并注册后，这里会显示和 Web 端一致的家庭统计、今日数据和 7 天趋势。',
+              actionLabel: '去我的页面',
+              onAction: () => setState(() => _tabIndex = 2),
             )
           else
-            Row(
-              children: [
-                Expanded(
-                  child: FilledButton.icon(
-                    onPressed: _isAnalyzing ? null : _toggleRecording,
-                    icon: Icon(_isRecording ? Icons.stop : Icons.mic),
-                    label: Text(_isRecording ? '停止并分析' : '录一段语音'),
-                  ),
-                ),
-                const SizedBox(width: 12),
-                IconButton.filledTonal(
-                  onPressed: _isRecording ? null : _endBackendSession,
-                  tooltip: '结束会话',
-                  icon: const Icon(Icons.close),
-                ),
-              ],
+            _StatsPanel(
+              familyStats: _familyStats,
+              dailyReport: _dailyReport,
+              rangeReport: _rangeReport,
+              onRefresh: () => _refreshStats(),
             ),
-          const SizedBox(height: 16),
-          _ModelPanel(
-            status: _modelStatus,
-            latestBackend: result?.modelBackend,
-            isLoading: _isModelLoading,
-            onRefresh: () => _loadSystemInfo(),
-            onPreload: _preloadModel,
-          ),
-          const SizedBox(height: 16),
-          _StatsPanel(
-            familyStats: _familyStats,
-            dailyReport: _dailyReport,
-            rangeReport: _rangeReport,
-            onRefresh: () => _refreshStats(),
-          ),
-          const SizedBox(height: 20),
-          if (_history.isNotEmpty) Text('最近分析', style: Theme.of(context).textTheme.titleMedium),
-          const SizedBox(height: 8),
-          for (final item in _history) _HistoryTile(result: item),
         ],
       ),
+    );
+  }
+
+  Widget _buildProfile() {
+    return ListView(
+      padding: const EdgeInsets.all(16),
+      children: [
+        _Panel(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('服务器', style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w700)),
+              const SizedBox(height: 12),
+              TextField(
+                controller: _apiBaseUrlController,
+                decoration: const InputDecoration(
+                  labelText: '后端地址',
+                  prefixIcon: Icon(Icons.cloud_queue),
+                  border: OutlineInputBorder(),
+                ),
+                keyboardType: TextInputType.url,
+              ),
+              const SizedBox(height: 12),
+              Row(
+                children: [
+                  Expanded(
+                    child: OutlinedButton.icon(
+                      onPressed: _connectServer,
+                      icon: const Icon(Icons.link),
+                      label: const Text('连接服务器'),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: FilledButton.icon(
+                      onPressed: _preloadModel,
+                      icon: const Icon(Icons.memory),
+                      label: Text(_isModelLoading ? '加载中' : '预加载模型'),
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 16),
+        _ModelPanel(
+          status: _modelStatus,
+          latestBackend: _latestResult?.modelBackend,
+          isLoading: _isModelLoading,
+          onRefresh: () => _loadSystemInfo(),
+          onPreload: _preloadModel,
+        ),
+        const SizedBox(height: 16),
+        _Panel(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('账号', style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w700)),
+              const SizedBox(height: 12),
+              if (_isLoggedIn) ...[
+                _MetricRow(label: '昵称', value: _nickname ?? '--'),
+                _MetricRow(label: '家庭', value: _familyName ?? '--'),
+                _MetricRow(label: '用户 ID', value: _userId ?? '--'),
+                const SizedBox(height: 8),
+                OutlinedButton.icon(
+                  onPressed: _logout,
+                  icon: const Icon(Icons.logout),
+                  label: const Text('退出登录'),
+                ),
+              ] else ...[
+                TextField(
+                  controller: _nicknameController,
+                  decoration: const InputDecoration(
+                    labelText: '昵称',
+                    prefixIcon: Icon(Icons.person_outline),
+                    border: OutlineInputBorder(),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: _phoneController,
+                  decoration: const InputDecoration(
+                    labelText: '手机号（可选）',
+                    prefixIcon: Icon(Icons.phone_outlined),
+                    border: OutlineInputBorder(),
+                  ),
+                  keyboardType: TextInputType.phone,
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: _emailController,
+                  decoration: const InputDecoration(
+                    labelText: '邮箱（可选）',
+                    prefixIcon: Icon(Icons.mail_outline),
+                    border: OutlineInputBorder(),
+                  ),
+                  keyboardType: TextInputType.emailAddress,
+                ),
+                const SizedBox(height: 12),
+                FilledButton.icon(
+                  onPressed: _registerAndLogin,
+                  icon: const Icon(Icons.arrow_forward),
+                  label: const Text('注册并登录'),
+                ),
+              ],
+            ],
+          ),
+        ),
+      ],
     );
   }
 }
@@ -656,10 +714,7 @@ class _StatusPanel extends StatelessWidget {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(
-                      familyName,
-                      style: Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w700),
-                    ),
+                    Text(familyName, style: Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w700)),
                     const SizedBox(height: 4),
                     Text(nickname, style: Theme.of(context).textTheme.bodySmall),
                   ],
@@ -699,7 +754,7 @@ class _StatusPanel extends StatelessWidget {
           ),
           const SizedBox(height: 18),
           if (currentResult == null)
-            const Text('开始会话后录一段 2-8 秒的语音，后端会返回 -1 / 0 / 1 情绪值。')
+            const Text('连接服务器后开始会话，录一段 2-8 秒语音，后端会返回 -1 / 0 / 1 情绪值。')
           else ...[
             _MetricRow(label: '效价 Valence', value: currentResult.valence.toStringAsFixed(3)),
             _MetricRow(label: '愤怒/紧张参考值', value: currentResult.angerScore.toStringAsFixed(3)),
@@ -734,25 +789,37 @@ class _ModelPanel extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final loaded = status?['caire_loaded'] == true;
-    final device = status?['device']?.toString() ?? '--';
     final backend = status?['backend']?.toString() ?? '--';
+    var loaded = false;
+    if (backend == 'sensevoice') {
+      loaded = status?['sensevoice_loaded'] == true;
+    } else if (backend == 'caire') {
+      loaded = status?['caire_loaded'] == true;
+    } else if (backend == 'rule') {
+      loaded = true;
+    }
+    final device = status?['device']?.toString() ?? '--';
     final cuda = status?['torch_cuda_available'] == true ? '可用' : '不可用';
-    final error = status?['caire_load_error']?.toString();
+    String? error;
+    String? modelId;
+    if (backend == 'sensevoice') {
+      error = status?['sensevoice_load_error']?.toString();
+      modelId = status?['sensevoice_model_id']?.toString();
+    } else if (backend == 'caire') {
+      error = status?['caire_load_error']?.toString();
+      modelId = status?['caire_model_id']?.toString();
+    }
 
     return _Panel(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          _SectionHeader(
-            title: '模型状态',
-            actionIcon: Icons.refresh,
-            onAction: onRefresh,
-          ),
+          _SectionHeader(title: '模型状态', actionIcon: Icons.refresh, onAction: onRefresh),
           _MetricRow(label: '后端', value: backend),
+          _MetricRow(label: '模型', value: modelId ?? '--'),
           _MetricRow(label: '设备', value: device),
           _MetricRow(label: 'CUDA', value: cuda),
-          _MetricRow(label: 'CAiRE', value: loaded ? '已加载' : '未加载'),
+          _MetricRow(label: '状态', value: loaded ? '已加载' : '未加载'),
           if (latestBackend != null) _MetricRow(label: '最近推理', value: latestBackend!),
           if (error != null && error.isNotEmpty)
             Text(error, maxLines: 3, overflow: TextOverflow.ellipsis, style: const TextStyle(color: Color(0xFFD9534F))),
@@ -762,7 +829,7 @@ class _ModelPanel extends StatelessWidget {
             icon: isLoading
                 ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
                 : const Icon(Icons.memory),
-            label: Text(isLoading ? '加载中' : '预加载 CAiRE'),
+            label: Text(isLoading ? '加载中' : '预加载模型'),
           ),
         ],
       ),
@@ -823,6 +890,31 @@ class _StatsPanel extends StatelessWidget {
   }
 }
 
+class _InfoPanel extends StatelessWidget {
+  const _InfoPanel({required this.title, required this.body, required this.actionLabel, required this.onAction});
+
+  final String title;
+  final String body;
+  final String actionLabel;
+  final VoidCallback onAction;
+
+  @override
+  Widget build(BuildContext context) {
+    return _Panel(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(title, style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w700)),
+          const SizedBox(height: 8),
+          Text(body),
+          const SizedBox(height: 12),
+          OutlinedButton.icon(onPressed: onAction, icon: const Icon(Icons.person), label: Text(actionLabel)),
+        ],
+      ),
+    );
+  }
+}
+
 class _Panel extends StatelessWidget {
   const _Panel({required this.child});
 
@@ -836,11 +928,7 @@ class _Panel extends StatelessWidget {
         color: Colors.white,
         borderRadius: BorderRadius.circular(8),
         boxShadow: [
-          BoxShadow(
-            color: Colors.black.withValues(alpha: 0.05),
-            blurRadius: 16,
-            offset: const Offset(0, 8),
-          ),
+          BoxShadow(color: Colors.black.withValues(alpha: 0.05), blurRadius: 16, offset: const Offset(0, 8)),
         ],
       ),
       child: child,
@@ -860,11 +948,7 @@ class _SectionHeader extends StatelessWidget {
     return Row(
       children: [
         Expanded(child: Text(title, style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w700))),
-        IconButton(
-          onPressed: onAction,
-          tooltip: title,
-          icon: Icon(actionIcon),
-        ),
+        IconButton(onPressed: onAction, tooltip: title, icon: Icon(actionIcon)),
       ],
     );
   }
@@ -887,10 +971,7 @@ class _MetricGrid extends StatelessWidget {
       children: [
         for (final item in items)
           DecoratedBox(
-            decoration: BoxDecoration(
-              color: const Color(0xFFF1F5F2),
-              borderRadius: BorderRadius.circular(8),
-            ),
+            decoration: BoxDecoration(color: const Color(0xFFF1F5F2), borderRadius: BorderRadius.circular(8)),
             child: Padding(
               padding: const EdgeInsets.all(10),
               child: Column(
@@ -927,7 +1008,7 @@ class _TrendBar extends StatelessWidget {
       padding: const EdgeInsets.only(bottom: 8),
       child: Row(
         children: [
-          SizedBox(width: 54, child: Text(day.date.substring(5), style: Theme.of(context).textTheme.bodySmall)),
+          SizedBox(width: 54, child: Text(day.date.length >= 7 ? day.date.substring(5) : day.date, style: Theme.of(context).textTheme.bodySmall)),
           Expanded(
             child: ClipRRect(
               borderRadius: BorderRadius.circular(99),
@@ -977,10 +1058,7 @@ class _StateChip extends StatelessWidget {
   Widget build(BuildContext context) {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-      decoration: BoxDecoration(
-        color: color.withValues(alpha: 0.12),
-        borderRadius: BorderRadius.circular(999),
-      ),
+      decoration: BoxDecoration(color: color.withValues(alpha: 0.12), borderRadius: BorderRadius.circular(999)),
       child: Text(text, style: TextStyle(color: color, fontWeight: FontWeight.w700)),
     );
   }
@@ -1027,7 +1105,7 @@ class EmotionResult {
   factory EmotionResult.fromJson(Map<String, dynamic> json) {
     final dimensions = (json['emotion_dimensions'] as Map<String, dynamic>? ?? {});
     final raw = (json['raw_emotions'] as Map<String, dynamic>? ?? {})
-        .map((key, value) => MapEntry(key, (value as num).toDouble()));
+        .map((key, value) => MapEntry(key, value is num ? value.toDouble() : 0.0));
     final sorted = raw.entries.toList()..sort((a, b) => b.value.compareTo(a.value));
 
     return EmotionResult(

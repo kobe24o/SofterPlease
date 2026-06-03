@@ -2,7 +2,7 @@
 
 Flutter Android client for recording short WAV voice segments and sending them to the SofterPlease backend.
 
-The app registers users through the backend `/v1/users` endpoint, stores the returned token locally, syncs profile/family data through `/v1/users/me`, and shows the same family/report statistics used by the web dashboard.
+The app opens directly into the main monitoring shell. Users can browse the monitor and statistics screens before signing in. The **My** page connects to the server, registers users through the backend `/v1/users` endpoint, stores the returned token locally, syncs profile/family data through `/v1/users/me`, and shows the same family/report statistics used by the web dashboard.
 
 ## Build
 

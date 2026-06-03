@@ -11,13 +11,14 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:softerplease/main.dart';
 
 void main() {
-  testWidgets('renders login screen', (WidgetTester tester) async {
+  testWidgets('renders main shell without login gate', (WidgetTester tester) async {
     SharedPreferences.setMockInitialValues({});
 
     await tester.pumpWidget(const SofterPleaseApp());
     await tester.pumpAndSettle();
 
     expect(find.text('SofterPlease'), findsOneWidget);
-    expect(find.text('注册并进入'), findsOneWidget);
+    expect(find.text('游客模式'), findsOneWidget);
+    expect(find.text('我的'), findsOneWidget);
   });
 }

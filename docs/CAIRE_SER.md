@@ -1,6 +1,25 @@
-# CAiRE Speech Emotion Recognition
+# Speech Emotion Recognition Backends
 
-The backend uses `CAiRE/SER-wav2vec2-large-xlsr-53-eng-zho-all-age` when `EMOTION_BACKEND=caire`.
+The default backend is now Alibaba/FunAudioLLM SenseVoiceSmall:
+
+```powershell
+$env:EMOTION_BACKEND="sensevoice"
+uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+```
+
+SenseVoice returns coarse emotion tags such as `HAPPY`, `SAD`, `ANGRY`, and `NEUTRAL`.
+SofterPlease maps them to:
+
+- `HAPPY` -> `emotion_value = 1`
+- `NEUTRAL` -> `emotion_value = 0`
+- `SAD` / `ANGRY` -> `emotion_value = -1`
+
+The implementation uses `FunAudioLLM/SenseVoiceSmall` through FunASR/modelscope.
+On this Windows Python 3.13 environment, the native `editdistance` dependency has no ready wheel, so the backend includes a pure-Python compatibility package at `backend/vendor/editdistance_shim`.
+
+## CAiRE
+
+The backend can still use `CAiRE/SER-wav2vec2-large-xlsr-53-eng-zho-all-age` when `EMOTION_BACKEND=caire`.
 
 - Source model: https://huggingface.co/CAiRE/SER-wav2vec2-large-xlsr-53-eng-zho-all-age
 - Training scripts: https://github.com/HLTCHKUST/elderly_ser
