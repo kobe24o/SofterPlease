@@ -2,6 +2,8 @@
 
 Flutter Android client for recording short WAV voice segments and sending them to the SofterPlease backend.
 
+The app registers users through the backend `/v1/users` endpoint, stores the returned token locally, syncs profile/family data through `/v1/users/me`, and shows the same family/report statistics used by the web dashboard.
+
 ## Build
 
 1. Install Flutter and Android Studio.
@@ -16,7 +18,7 @@ Flutter Android client for recording short WAV voice segments and sending them t
 
    ```powershell
    flutter pub get
-   flutter build apk --dart-define=API_BASE_URL=http://10.0.2.2:8000
+   flutter build apk --dart-define=API_BASE_URL=http://192.168.1.10:8000
    ```
 
-Use `10.0.2.2` for the Android emulator. Use your computer's LAN IP when testing on a physical phone.
+Use `10.0.2.2` only for the Android emulator. Use your computer's LAN IP when testing on a physical phone on the same WiFi network. The app also exposes the backend URL on the login screen, so you can change it without rebuilding when the LAN IP changes.

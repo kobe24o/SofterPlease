@@ -301,6 +301,16 @@ def system_info() -> dict[str, Any]:
         "version": APP_VERSION,
         "server_time": now_utc().isoformat(),
         "features": ["emotion_analysis", "voice_recognition", "realtime_feedback"],
+        "emotion_model": emotion_analyzer.get_status(),
+    }
+
+
+@app.post("/v1/system/emotion-model/load")
+def load_emotion_model() -> dict[str, Any]:
+    loaded = emotion_analyzer.ensure_model_loaded()
+    return {
+        "loaded": loaded,
+        "emotion_model": emotion_analyzer.get_status(),
     }
 
 
@@ -1007,7 +1017,19 @@ def get_daily_report(
     # 实时计算
     start_dt = datetime.fromisoformat(f"{date}T00:00:00")
     end_dt = datetime.fromisoformat(f"{date}T23:59:59")
-    
+
+    session_stats = db.execute(
+        select(
+            func.count(SessionModel.id),
+            func.sum(SessionModel.duration_seconds),
+            func.sum(SessionModel.feedback_shown_count),
+            func.sum(SessionModel.feedback_accepted_count),
+        )
+        .where(SessionModel.family_id == family_id)
+        .where(SessionModel.started_at >= start_dt)
+        .where(SessionModel.started_at <= end_dt)
+    ).one()
+
     stats = db.execute(
         select(
             func.count(EmotionEvent.id),
@@ -1021,20 +1043,53 @@ def get_daily_report(
         .where(EmotionEvent.ts >= start_dt)
         .where(EmotionEvent.ts <= end_dt)
     ).one()
-    
+
+    level_rows = db.execute(
+        select(EmotionEvent.emotion_level, func.count(EmotionEvent.id))
+        .select_from(EmotionEvent)
+        .join(SessionModel, SessionModel.id == EmotionEvent.session_id)
+        .where(SessionModel.family_id == family_id)
+        .where(EmotionEvent.ts >= start_dt)
+        .where(EmotionEvent.ts <= end_dt)
+        .group_by(EmotionEvent.emotion_level)
+    ).all()
+
+    prev_start = start_dt - timedelta(days=1)
+    prev_end = end_dt - timedelta(days=1)
+    prev_avg = db.execute(
+        select(func.avg(EmotionEvent.anger_score))
+        .select_from(EmotionEvent)
+        .join(SessionModel, SessionModel.id == EmotionEvent.session_id)
+        .where(SessionModel.family_id == family_id)
+        .where(EmotionEvent.ts >= prev_start)
+        .where(EmotionEvent.ts <= prev_end)
+    ).scalar_one()
+
+    current_avg = float(stats[1] or 0.0)
+    previous_avg = float(prev_avg or 0.0)
+    if previous_avg == 0.0 or abs(current_avg - previous_avg) < 0.03:
+        trend_direction = "stable"
+    elif current_avg < previous_avg:
+        trend_direction = "improving"
+    else:
+        trend_direction = "worsening"
+
+    feedback_shown = int(session_stats[2] or 0)
+    feedback_accepted = int(session_stats[3] or 0)
+
     return DailyReportResponse(
         date=date,
         session_count=0,  # TODO: 计算会话数
-        total_duration_seconds=0,
+        total_duration_seconds=int(session_stats[1] or 0),
         emotion_event_count=stats[0] or 0,
-        emotion_events_by_level={},
-        avg_anger_score=round(stats[1] or 0.0, 4),
+        emotion_events_by_level={row[0]: row[1] for row in level_rows},
+        avg_anger_score=round(current_avg, 4),
         max_anger_score=stats[2] or 0.0,
-        feedback_shown_count=0,
-        feedback_accepted_count=0,
-        feedback_accepted_rate=0.0,
-        improvement_score=0.0,
-        trend_direction="stable",
+        feedback_shown_count=feedback_shown,
+        feedback_accepted_count=feedback_accepted,
+        feedback_accepted_rate=round(feedback_accepted / feedback_shown, 4) if feedback_shown else 0.0,
+        improvement_score=round(max(previous_avg - current_avg, 0.0), 4),
+        trend_direction=trend_direction,
     )
 
 

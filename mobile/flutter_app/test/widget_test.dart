@@ -18,6 +18,6 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('SofterPlease'), findsOneWidget);
-    expect(find.text('创建并进入'), findsOneWidget);
+    expect(find.text('注册并进入'), findsOneWidget);
   });
 }

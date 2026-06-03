@@ -151,8 +151,10 @@ class EmotionAnalyzer:
         "直接说", "说重点", "没时间", "忙着呢",
     ]
     
-    def __init__(self, model_path: Optional[str] = None, device: str = "cpu"):
-        device = os.getenv("EMOTION_DEVICE", device)
+    def __init__(self, model_path: Optional[str] = None, device: str = "auto"):
+        device = os.getenv("EMOTION_DEVICE", device).strip().lower()
+        if device == "auto":
+            device = "cuda" if torch.cuda.is_available() else "cpu"
         self.device = torch.device(device)
         self.sample_rate = 16000
         self.n_mels = 128
@@ -163,6 +165,13 @@ class EmotionAnalyzer:
         self._caire_model = None
         self._caire_feature_extractor = None
         self._caire_load_attempted = False
+        self._caire_load_error = None
+        logger.info(
+            "Emotion backend=%s device=%s torch_cuda_available=%s",
+            self.backend,
+            self.device,
+            torch.cuda.is_available(),
+        )
         
         # 初始化模型（如果没有预训练模型，使用规则引擎）
         self.model = None
@@ -192,7 +201,7 @@ class EmotionAnalyzer:
         if model_path is None:
             model_path = os.getenv('EMOTION_MODEL_PATH', 'models/emotion_cnn.pth')
         
-        if model_path and os.path.exists(model_path):
+        if self.backend == "local_cnn" and model_path and os.path.exists(model_path):
             try:
                 self.model = EmotionCNN().to(self.device)
                 self.model.load_state_dict(torch.load(model_path, map_location=self.device))
@@ -202,11 +211,41 @@ class EmotionAnalyzer:
             except Exception as e:
                 logger.warning(f"Failed to load ML model from {model_path}: {e}")
                 logger.info("Falling back to rule-based engine")
-        else:
+        elif self.backend == "local_cnn":
             if model_path:
                 logger.warning(f"Model weights not found at {model_path}, using rule-based engine")
             else:
                 logger.info("No model path provided, using rule-based engine")
+
+    def get_status(self) -> Dict[str, Any]:
+        """Return runtime model status for health checks and clients."""
+        cuda_name = None
+        if torch.cuda.is_available():
+            try:
+                cuda_name = torch.cuda.get_device_name(0)
+            except Exception:
+                cuda_name = "available"
+
+        return {
+            "backend": self.backend,
+            "device": str(self.device),
+            "torch_version": torch.__version__,
+            "torch_cuda_available": torch.cuda.is_available(),
+            "torch_cuda_version": torch.version.cuda,
+            "cuda_device": cuda_name,
+            "caire_model_id": self.caire_model_id,
+            "caire_loaded": self._caire_model is not None,
+            "caire_load_attempted": self._caire_load_attempted,
+            "caire_load_error": self._caire_load_error,
+            "local_cnn_loaded": self.use_ml_model,
+            "fallback_backend": "rule",
+        }
+
+    def ensure_model_loaded(self) -> bool:
+        """Eagerly load the configured emotion model when supported."""
+        if self.backend == "caire":
+            return self._ensure_caire_model()
+        return self.use_ml_model or self.backend == "rule"
 
     def _ensure_caire_model(self) -> bool:
         """延迟加载 CAiRE 模型，避免服务启动时阻塞或强依赖 transformers。"""
@@ -216,6 +255,7 @@ class EmotionAnalyzer:
             return False
 
         self._caire_load_attempted = True
+        self._caire_load_error = None
         try:
             from transformers import Wav2Vec2FeatureExtractor, Wav2Vec2ForSequenceClassification
             from transformers.modeling_outputs import SequenceClassifierOutput
@@ -286,7 +326,8 @@ class EmotionAnalyzer:
             logger.info("Loaded CAiRE SER model: %s", self.caire_model_id)
             return True
         except Exception as exc:
-            logger.warning("Failed to load CAiRE SER model, falling back to rules: %s", exc)
+            self._caire_load_error = str(exc)
+            logger.exception("Failed to load CAiRE SER model, falling back to rules")
             self._caire_model = None
             self._caire_feature_extractor = None
             return False
