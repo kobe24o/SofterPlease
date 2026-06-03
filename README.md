@@ -86,6 +86,40 @@ SofterPlease/
 
 ## 快速开始
 
+### 一键启动（推荐）
+
+在项目根目录执行：
+
+```bash
+# Windows CMD
+start.bat
+
+# Windows PowerShell
+.\start.ps1
+
+# macOS / Linux
+sh start.sh
+```
+
+默认会启动：
+
+- 后端 API：`http://localhost:8000`
+- API 文档：`http://localhost:8000/docs`
+- Web 页面：`http://localhost:8080`
+
+常用参数：
+
+```bash
+# 首次启动时顺便安装后端依赖
+python start.py --install
+
+# 切换情绪识别后端
+python start.py --emotion-backend sensevoice
+
+# 修改端口
+python start.py --backend-port 8000 --web-port 8080
+```
+
 ### 后端部署
 
 ```bash
