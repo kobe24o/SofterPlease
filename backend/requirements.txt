@@ -13,4 +13,4 @@ torch>=2.2
 transformers>=4.40,<5
 antlr4-python3-runtime==4.9.3
 -e ./vendor/editdistance_shim
-funasr>=1.2.6
+funasr>=1.3.9

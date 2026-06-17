@@ -10,6 +10,7 @@ from .feedback_generator import FeedbackGenerator
 from .audio_processor import AudioProcessor
 from .text_emotion_model import TextEmotionModel
 from .multimodal_emotion_model import MultimodalEmotionModel
+from .tri_class_emotion_model import TriClassEmotionModel
 
 __all__ = [
     "EmotionAnalyzer",
@@ -18,4 +19,5 @@ __all__ = [
     "AudioProcessor",
     "TextEmotionModel",
     "MultimodalEmotionModel",
+    "TriClassEmotionModel",
 ]

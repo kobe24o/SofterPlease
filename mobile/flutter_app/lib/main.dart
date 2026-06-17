@@ -52,6 +52,7 @@ class _MonitorPageState extends State<MonitorPage> {
   final _transcriptController = TextEditingController();
   final _recorder = AudioRecorder();
   late final Dio _dio;
+  Future<String?>? _tokenRefreshFuture;
 
   int _tabIndex = 0;
   String? _token;
@@ -85,6 +86,7 @@ class _MonitorPageState extends State<MonitorPage> {
         receiveTimeout: const Duration(minutes: 10),
       ),
     );
+    _configureAuthInterceptor();
     _restoreSession();
   }
 
@@ -129,6 +131,68 @@ class _MonitorPageState extends State<MonitorPage> {
 
   void _setAuthHeader(String token) {
     _dio.options.headers['Authorization'] = 'Bearer $token';
+  }
+
+  void _configureAuthInterceptor() {
+    _dio.interceptors.add(
+      InterceptorsWrapper(
+        onError: (error, handler) async {
+          final request = error.requestOptions;
+          final shouldRefresh = error.response?.statusCode == 401 &&
+              request.path != '/v1/auth/login' &&
+              request.extra['authRetried'] != true;
+
+          if (!shouldRefresh) {
+            handler.next(error);
+            return;
+          }
+
+          try {
+            final token = await _refreshAccessToken();
+            if (token == null) {
+              handler.next(error);
+              return;
+            }
+
+            request.extra['authRetried'] = true;
+            request.headers['Authorization'] = 'Bearer $token';
+            final response = await _dio.fetch<dynamic>(request);
+            handler.resolve(response);
+          } catch (_) {
+            handler.next(error);
+          }
+        },
+      ),
+    );
+  }
+
+  Future<String?> _refreshAccessToken() {
+    final activeRefresh = _tokenRefreshFuture;
+    if (activeRefresh != null) return activeRefresh;
+
+    final refresh = _performTokenRefresh();
+    _tokenRefreshFuture = refresh;
+    return refresh.whenComplete(() {
+      _tokenRefreshFuture = null;
+    });
+  }
+
+  Future<String?> _performTokenRefresh() async {
+    final prefs = await SharedPreferences.getInstance();
+    final userId = _userId ?? prefs.getString('user_id');
+    if (userId == null || userId.isEmpty) return null;
+
+    final authDio = Dio(
+      BaseOptions(
+        baseUrl: _dio.options.baseUrl,
+        connectTimeout: const Duration(seconds: 20),
+        receiveTimeout: const Duration(seconds: 30),
+      ),
+    );
+    final response = await authDio.post('/v1/auth/login', data: {'user_id': userId});
+    final data = response.data as Map<String, dynamic>;
+    await _applyLogin(data);
+    return _token;
   }
 
   Future<void> _saveBaseUrl() async {
@@ -811,6 +875,8 @@ class _StatusPanel extends StatelessWidget {
             _MetricRow(label: '愤怒/紧张参考值', value: currentResult.angerScore.toStringAsFixed(3)),
             _MetricRow(label: '置信度', value: currentResult.confidence.toStringAsFixed(3)),
             _MetricRow(label: '本次模型', value: currentResult.modelBackend),
+            if (currentResult.transcript.isNotEmpty)
+              _MetricRow(label: '识别文本', value: currentResult.transcript),
             if (currentResult.topLabels.isNotEmpty)
               Text(
                 'Top: ${currentResult.topLabels.entries.take(3).map((e) => '${e.key} ${e.value.toStringAsFixed(2)}').join(' / ')}',
@@ -1134,7 +1200,7 @@ class _HistoryTile extends StatelessWidget {
       child: ListTile(
         leading: CircleAvatar(child: Text('${result.emotionValue}')),
         title: Text('Valence ${result.valence.toStringAsFixed(3)}'),
-        subtitle: Text('level ${result.emotionLevel} · ${result.modelBackend}'),
+        subtitle: Text('愤怒强度 ${result.emotionLevel} · ${result.modelBackend}'),
         trailing: Text(result.confidence.toStringAsFixed(2)),
       ),
     );
@@ -1150,6 +1216,7 @@ class EmotionResult {
     required this.confidence,
     required this.modelBackend,
     required this.topLabels,
+    required this.transcript,
   });
 
   final double angerScore;
@@ -1159,6 +1226,7 @@ class EmotionResult {
   final double confidence;
   final String modelBackend;
   final Map<String, double> topLabels;
+  final String transcript;
 
   factory EmotionResult.fromJson(Map<String, dynamic> json) {
     final dimensions = (json['emotion_dimensions'] as Map<String, dynamic>? ?? {});
@@ -1174,6 +1242,7 @@ class EmotionResult {
       confidence: (json['confidence'] as num?)?.toDouble() ?? 0.0,
       modelBackend: json['model_backend'] as String? ?? 'unknown',
       topLabels: Map.fromEntries(sorted.take(5)),
+      transcript: json['transcript'] as String? ?? '',
     );
   }
 }

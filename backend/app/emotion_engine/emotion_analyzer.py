@@ -24,6 +24,7 @@ import torch.nn as nn
 
 from .text_emotion_model import TextEmotionModel
 from .multimodal_emotion_model import MultimodalEmotionModel
+from .tri_class_emotion_model import TriClassEmotionModel
 
 # 配置日志
 logger = logging.getLogger(__name__)
@@ -50,6 +51,7 @@ class EmotionAnalysisResult:
     confidence: float
     model_backend: str = "rule"
     raw_emotions: Dict[str, float] = field(default_factory=dict)
+    transcript: str = ""
     
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -69,6 +71,7 @@ class EmotionAnalysisResult:
             "raw_emotions": {
                 label: round(score, 4) for label, score in self.raw_emotions.items()
             },
+            "transcript": self.transcript,
         }
 
 
@@ -134,6 +137,7 @@ class EmotionAnalyzer:
 
     CAIRE_MODEL_ID = "CAiRE/SER-wav2vec2-large-xlsr-53-eng-zho-all-age"
     SENSEVOICE_MODEL_ID = "iic/SenseVoiceSmall"
+    EMOTION2VEC_MODEL_ID = "iic/emotion2vec_plus_large"
     CAIRE_LABELS = [
         "sadness", "fear", "angry", "happiness", "disgust", "neutral", "surprise",
         "positive", "negative", "excitement", "frustrated", "other", "unknown",
@@ -166,6 +170,10 @@ class EmotionAnalyzer:
         self.backend = os.getenv("EMOTION_BACKEND", "sensevoice").strip().lower()
         self.caire_model_id = os.getenv("CAIRE_MODEL_ID", self.CAIRE_MODEL_ID)
         self.sensevoice_model_id = os.getenv("SENSEVOICE_MODEL_ID", self.SENSEVOICE_MODEL_ID)
+        self.emotion2vec_model_id = os.getenv("EMOTION2VEC_MODEL_ID", self.EMOTION2VEC_MODEL_ID)
+        self._emotion2vec_model = None
+        self._emotion2vec_load_attempted = False
+        self._emotion2vec_load_error = None
         self._caire_model = None
         self._caire_feature_extractor = None
         self._caire_load_attempted = False
@@ -204,6 +212,20 @@ class EmotionAnalyzer:
             except Exception as e:
                 logger.warning(f"Failed to load multimodal emotion model from {multimodal_model_path}: {e}")
 
+        self.tri_class_model = None
+        self.tri_class_model_path = None
+        tri_class_model_path = os.getenv(
+            "TRICLASS_EMOTION_MODEL_PATH",
+            "models/debug_emotion_calibrator_v1.json",
+        )
+        if tri_class_model_path and os.path.exists(tri_class_model_path):
+            try:
+                self.tri_class_model = TriClassEmotionModel.load(tri_class_model_path)
+                self.tri_class_model_path = tri_class_model_path
+                logger.info("Loaded tri-class emotion calibrator from %s", tri_class_model_path)
+            except Exception as e:
+                logger.warning("Failed to load tri-class emotion calibrator from %s: %s", tri_class_model_path, e)
+
         # 优先使用传入的路径，其次从环境变量读取
         if model_path is None:
             model_path = os.getenv('EMOTION_MODEL_PATH', 'models/emotion_cnn.pth')
@@ -240,6 +262,10 @@ class EmotionAnalyzer:
             "torch_cuda_available": torch.cuda.is_available(),
             "torch_cuda_version": torch.version.cuda,
             "cuda_device": cuda_name,
+            "emotion2vec_model_id": self.emotion2vec_model_id,
+            "emotion2vec_loaded": self._emotion2vec_model is not None,
+            "emotion2vec_load_attempted": self._emotion2vec_load_attempted,
+            "emotion2vec_load_error": self._emotion2vec_load_error,
             "sensevoice_model_id": self.sensevoice_model_id,
             "sensevoice_loaded": self._sensevoice_model is not None,
             "sensevoice_load_attempted": self._sensevoice_load_attempted,
@@ -249,16 +275,62 @@ class EmotionAnalyzer:
             "caire_load_attempted": self._caire_load_attempted,
             "caire_load_error": self._caire_load_error,
             "local_cnn_loaded": self.use_ml_model,
+            "tri_class_calibrator_loaded": self.tri_class_model is not None,
+            "tri_class_calibrator_version": self.tri_class_model.version if self.tri_class_model else None,
+            "tri_class_calibrator_path": self.tri_class_model_path,
+            "tri_class_calibrator_metrics": self.tri_class_model.metrics if self.tri_class_model else None,
             "fallback_backend": "rule",
         }
 
+    def load_tri_class_calibrator(self, model_path: str, version: str | None = None) -> bool:
+        try:
+            model = TriClassEmotionModel.load(model_path)
+            if version:
+                model.version = version
+            self.tri_class_model = model
+            self.tri_class_model_path = str(model_path)
+            logger.info("Activated tri-class emotion calibrator %s from %s", model.version, model_path)
+            return True
+        except Exception as exc:
+            logger.exception("Failed to activate tri-class emotion calibrator from %s", model_path)
+            return False
+
     def ensure_model_loaded(self) -> bool:
         """Eagerly load the configured emotion model when supported."""
+        if self.backend == "emotion2vec":
+            return self._ensure_emotion2vec_model()
         if self.backend == "sensevoice":
             return self._ensure_sensevoice_model()
         if self.backend == "caire":
             return self._ensure_caire_model()
         return self.use_ml_model or self.backend == "rule"
+
+    def _ensure_emotion2vec_model(self) -> bool:
+        """Lazy-load FunASR emotion2vec."""
+        if self._emotion2vec_model is not None:
+            return True
+        if self._emotion2vec_load_attempted:
+            return False
+
+        self._emotion2vec_load_attempted = True
+        self._emotion2vec_load_error = None
+        try:
+            from funasr import AutoModel
+
+            device = "cuda:0" if self.device.type == "cuda" and torch.cuda.is_available() else "cpu"
+            self._emotion2vec_model = AutoModel(
+                model=self.emotion2vec_model_id,
+                trust_remote_code=True,
+                device=device,
+                disable_update=True,
+            )
+            logger.info("Loaded emotion2vec model: %s on %s", self.emotion2vec_model_id, device)
+            return True
+        except Exception as exc:
+            self._emotion2vec_load_error = str(exc)
+            logger.exception("Failed to load emotion2vec model, falling back to rules")
+            self._emotion2vec_model = None
+            return False
 
     def _ensure_sensevoice_model(self) -> bool:
         """Lazy-load Alibaba/FunAudioLLM SenseVoiceSmall."""
@@ -412,6 +484,7 @@ class EmotionAnalyzer:
         intervals = librosa.effects.split(audio, top_db=20)
         speech_duration = sum(end - start for start, end in intervals) / sr
         total_duration = len(audio) / sr
+        features["duration"] = float(total_duration)
         features["pause_ratio"] = 1.0 - (speech_duration / total_duration) if total_duration > 0 else 0.0
         
         # 频谱质心 (Spectral Centroid) - 亮度
@@ -499,10 +572,10 @@ class EmotionAnalyzer:
         
         # 高音调增加愤怒可能性
         pitch_mean = features.get("pitch_mean", 150)
-        if pitch_mean > 200:
-            score += 0.15
-        elif pitch_mean > 250:
+        if pitch_mean > 250:
             score += 0.25
+        elif pitch_mean > 200:
+            score += 0.15
         
         # 高音调方差（声音颤抖）
         pitch_std = features.get("pitch_std", 20)
@@ -521,10 +594,10 @@ class EmotionAnalyzer:
         
         # 快语速
         speaking_rate = features.get("speaking_rate", 2.0)
-        if speaking_rate > 4.0:
-            score += 0.15
-        elif speaking_rate > 5.0:
+        if speaking_rate > 5.0:
             score += 0.2
+        elif speaking_rate > 4.0:
+            score += 0.15
         
         # 少停顿（急促）
         pause_ratio = features.get("pause_ratio", 0.3)
@@ -549,13 +622,16 @@ class EmotionAnalyzer:
         neg_hits = sum(1 for w in neg_words if w in text)
         text_len = len(text)
 
-        duration = 1.8  # 在线推理中没有完整时长特征时给定稳定默认
+        duration = float(acoustic_features.get("duration", 1.8))
         return {
             "rms": float(acoustic_features.get("energy_mean", 0.0)),
             "peak": float(acoustic_features.get("energy_mean", 0.0) + acoustic_features.get("energy_std", 0.0)),
             "zcr": float(acoustic_features.get("zcr_mean", 0.0)),
             "duration": duration,
             "f0_est": float(acoustic_features.get("pitch_mean", 180.0)),
+            "pitch_std": float(acoustic_features.get("pitch_std", 0.0)),
+            "pause_ratio": float(acoustic_features.get("pause_ratio", 0.0)),
+            "speaking_rate": float(acoustic_features.get("speaking_rate", 0.0)),
             "text_len": float(text_len),
             "exclaim": float(exclaim),
             "anger_hits": float(anger_hits),
@@ -791,15 +867,194 @@ class EmotionAnalyzer:
         # 提取声学特征
         acoustic_features = self._extract_acoustic_features(audio, self.sample_rate)
         
-        # 使用 CAiRE、旧本地模型或规则引擎
-        if self.backend == "sensevoice" and self._ensure_sensevoice_model():
-            return self._sensevoice_based_analysis(audio, transcript, acoustic_features)
-        if self.backend == "caire" and self._ensure_caire_model():
-            return self._caire_based_analysis(audio, transcript, acoustic_features)
+        # Use the configured model directly. If it cannot load, avoid silently
+        # returning heuristic rule scores as if they were model predictions.
+        if self.backend == "emotion2vec":
+            if self._ensure_emotion2vec_model():
+                return self._emotion2vec_based_analysis(audio, transcript, acoustic_features)
+            return self._model_unavailable_analysis("emotion2vec", transcript, acoustic_features)
+        if self.backend == "sensevoice":
+            if self._ensure_sensevoice_model():
+                return self._sensevoice_based_analysis(audio, transcript, acoustic_features)
+            return self._model_unavailable_analysis("sensevoice", transcript, acoustic_features)
+        if self.backend == "caire":
+            if self._ensure_caire_model():
+                return self._caire_based_analysis(audio, transcript, acoustic_features)
+            return self._model_unavailable_analysis("caire", transcript, acoustic_features)
         if self.use_ml_model and self.model:
             return self._ml_based_analysis(audio, transcript, acoustic_features)
         else:
             return self._rule_based_analysis(audio, transcript, acoustic_features)
+
+    def _model_unavailable_analysis(
+        self,
+        backend: str,
+        transcript: str,
+        acoustic_features: Dict[str, float],
+    ) -> EmotionAnalysisResult:
+        return EmotionAnalysisResult(
+            anger_score=0.0,
+            emotion_level="calm",
+            emotion_value=0,
+            valence=0.0,
+            arousal=0.0,
+            dominance=0.5,
+            stress=0.0,
+            impatience=0.0,
+            acoustic_features=acoustic_features,
+            confidence=0.0,
+            model_backend=f"{backend}_unavailable",
+            raw_emotions={"neutral": 1.0},
+            transcript=transcript,
+        )
+
+    def _emotion2vec_based_analysis(
+        self,
+        audio: np.ndarray,
+        transcript: str,
+        acoustic_features: Dict[str, float],
+    ) -> EmotionAnalysisResult:
+        """Use FunASR emotion2vec utterance emotion scores and map them to -1/0/1."""
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temp_file:
+            temp_path = temp_file.name
+
+        try:
+            sf.write(temp_path, audio.astype(np.float32), self.sample_rate)
+            result = self._emotion2vec_model.generate(
+                input=temp_path,
+                granularity="utterance",
+                extract_embedding=False,
+            )
+        finally:
+            try:
+                os.remove(temp_path)
+            except OSError:
+                pass
+
+        raw_emotions = self._extract_emotion2vec_scores(result)
+        if not raw_emotions:
+            logger.warning("emotion2vec returned no usable emotion scores: %s", result)
+            return self._rule_based_analysis(audio, transcript, acoustic_features)
+
+        raw_emotions.setdefault("angry", 0.0)
+        raw_emotions.setdefault("disgusted", 0.0)
+        raw_emotions.setdefault("fearful", 0.0)
+        raw_emotions.setdefault("happy", 0.0)
+        raw_emotions.setdefault("neutral", 0.0)
+        raw_emotions.setdefault("sad", 0.0)
+        raw_emotions.setdefault("other", 0.0)
+        raw_emotions.setdefault("unknown", 0.0)
+
+        positive_score = raw_emotions["happy"]
+        negative_score = max(
+            raw_emotions["angry"],
+            raw_emotions["sad"],
+            raw_emotions["fearful"],
+            raw_emotions["disgusted"],
+        )
+        neutral_score = max(raw_emotions["neutral"], raw_emotions["other"], raw_emotions["unknown"] * 0.8)
+        valence = float(np.clip(positive_score - negative_score, -1.0, 1.0))
+        top_label = max(raw_emotions, key=raw_emotions.get)
+        top_score = raw_emotions[top_label]
+
+        if neutral_score >= max(positive_score, negative_score) * 0.9 or abs(valence) < 0.12:
+            emotion_value = 0
+        else:
+            emotion_value = 1 if valence > 0 else -1
+
+        anger_score = max(
+            raw_emotions["angry"],
+            raw_emotions["disgusted"] * 0.75,
+            raw_emotions["fearful"] * 0.55,
+            raw_emotions["sad"] * 0.35,
+        )
+        arousal = max(
+            raw_emotions["angry"],
+            raw_emotions["happy"] * 0.7,
+            raw_emotions["fearful"],
+            raw_emotions["disgusted"] * 0.7,
+        )
+        stress = max(
+            raw_emotions["angry"],
+            raw_emotions["fearful"],
+            raw_emotions["sad"] * 0.75,
+            raw_emotions["disgusted"] * 0.75,
+        )
+        if emotion_value == 1:
+            stress = min(stress, 0.35)
+            anger_score = min(anger_score, 0.35)
+
+        confidence = float(np.clip(top_score, 0.0, 1.0))
+        emotion_intensity = float(np.clip(max(anger_score, stress, arousal * 0.5), 0.0, 1.0))
+
+        return EmotionAnalysisResult(
+            anger_score=float(np.clip(anger_score, 0.0, 1.0)),
+            emotion_level=self._get_emotion_level(emotion_intensity),
+            emotion_value=emotion_value,
+            valence=valence,
+            arousal=float(np.clip(arousal, 0.0, 1.0)),
+            dominance=float(np.clip(
+                0.5 + raw_emotions["angry"] * 0.25 + positive_score * 0.12 - raw_emotions["sad"] * 0.2,
+                0.0,
+                1.0,
+            )),
+            stress=float(np.clip(stress, 0.0, 1.0)),
+            impatience=float(np.clip(max(raw_emotions["angry"], raw_emotions["disgusted"] * 0.7), 0.0, 1.0)),
+            acoustic_features=acoustic_features,
+            confidence=confidence,
+            model_backend="emotion2vec",
+            raw_emotions=raw_emotions,
+            transcript=transcript,
+        )
+
+    def _extract_emotion2vec_scores(self, result: Any) -> Dict[str, float]:
+        """Normalize FunASR emotion2vec output into stable English labels."""
+        item = result[0] if isinstance(result, list) and result else result
+        if not isinstance(item, dict):
+            return {}
+
+        labels = item.get("labels") or item.get("label")
+        scores = item.get("scores") or item.get("score")
+        if isinstance(labels, str):
+            labels = [labels]
+        if isinstance(scores, (int, float)):
+            scores = [scores]
+
+        if not labels or not scores:
+            output = item.get("output")
+            if isinstance(output, dict):
+                labels = output.get("labels") or output.get("label")
+                scores = output.get("scores") or output.get("score")
+
+        raw_emotions: Dict[str, float] = {}
+        if isinstance(labels, list) and isinstance(scores, list):
+            for label, score in zip(labels, scores):
+                normalized = self._normalize_emotion2vec_label(str(label))
+                if normalized:
+                    raw_emotions[normalized] = max(raw_emotions.get(normalized, 0.0), float(score))
+        return raw_emotions
+
+    def _normalize_emotion2vec_label(self, label: str) -> Optional[str]:
+        text = label.strip().lower()
+        if "angry" in text or "anger" in text or "生气" in text or "愤怒" in text:
+            return "angry"
+        if "disgust" in text or "厌恶" in text:
+            return "disgusted"
+        if "fear" in text or "恐惧" in text or "害怕" in text:
+            return "fearful"
+        if "happy" in text or "happiness" in text or "开心" in text or "高兴" in text:
+            return "happy"
+        if "neutral" in text or "中立" in text or "平静" in text:
+            return "neutral"
+        if "sad" in text or "sadness" in text or "难过" in text or "悲伤" in text:
+            return "sad"
+        if "surprise" in text or "惊讶" in text:
+            return "surprise"
+        if "other" in text or "其他" in text:
+            return "other"
+        if "unk" in text or "unknown" in text:
+            return "unknown"
+        return None
 
     def _sensevoice_based_analysis(
         self,
@@ -834,22 +1089,26 @@ class EmotionAnalyzer:
             raw_text = str(result)
 
         emotion_tag = self._extract_sensevoice_emotion(raw_text)
+        effective_transcript = transcript.strip() or self._extract_sensevoice_transcript(raw_text)
+        if emotion_tag == "sad" and self._is_benign_neutral_transcript(effective_transcript):
+            logger.info(
+                "SenseVoice SAD overridden to NEUTRAL for benign short transcript: %s",
+                effective_transcript,
+            )
+            emotion_tag = "neutral"
         raw_emotions = self._sensevoice_raw_scores(emotion_tag)
         anger_score = raw_emotions.get("angry", 0.0)
         sad_score = raw_emotions.get("sad", 0.0)
         positive_score = raw_emotions.get("happy", 0.0)
         negative_score = max(sad_score, anger_score)
-        neutral_score = raw_emotions.get("neutral", 0.0)
         valence = float(np.clip(positive_score - negative_score, -1.0, 1.0))
 
         if emotion_tag == "happy":
             emotion_value = 1
         elif emotion_tag in {"angry", "sad"}:
             emotion_value = -1
-        elif neutral_score >= max(positive_score, negative_score):
-            emotion_value = 0
         else:
-            emotion_value = self._valence_to_emotion_value(valence, neutral_margin=0.15)
+            emotion_value = 0
 
         arousal = 0.75 if emotion_tag == "angry" else 0.55 if emotion_tag == "happy" else 0.35
         stress = 0.8 if emotion_tag == "angry" else 0.55 if emotion_tag == "sad" else 0.15
@@ -868,6 +1127,7 @@ class EmotionAnalyzer:
             confidence=float(np.clip(max(raw_emotions.values()), 0.0, 1.0)),
             model_backend="sensevoice",
             raw_emotions=raw_emotions,
+            transcript=effective_transcript,
         )
 
     def _extract_sensevoice_emotion(self, raw_text: str) -> str:
@@ -879,6 +1139,49 @@ class EmotionAnalyzer:
         if "<|SAD|>" in text or "|SAD|" in text or "SAD" in text:
             return "sad"
         return "neutral"
+
+    def _extract_sensevoice_transcript(self, raw_text: str) -> str:
+        import re
+
+        return re.sub(r"<\|[^|]+\|>", "", raw_text).strip()
+
+    def _is_benign_neutral_transcript(self, transcript: str) -> bool:
+        import re
+
+        text = re.sub(r"[\s，。！？!?,.;；、~～…]+", "", transcript.strip().lower())
+        if not text:
+            return False
+
+        negative_markers = [
+            "生气", "难过", "伤心", "哭", "烦", "讨厌", "糟", "差", "不好", "别",
+            "滚", "闭嘴", "作业", "没写", "为什么", "怎么又", "不行", "不要",
+        ]
+        if any(marker in text for marker in negative_markers):
+            return False
+
+        benign_markers = [
+            "你好", "您好", "早上好", "中午好", "下午好", "晚上好", "哈喽", "hello",
+            "hi", "谢谢", "多谢", "好的", "好呀", "可以", "行", "嗯", "哦", "收到",
+            "知道了", "没问题", "再见", "拜拜",
+        ]
+        if any(marker in text for marker in benign_markers) and len(text) <= 16:
+            return True
+
+        return False
+
+    def _predict_tri_class(
+        self,
+        transcript: str,
+        acoustic_features: Dict[str, float],
+    ) -> Optional[Dict[int, float]]:
+        if self.tri_class_model is None:
+            return None
+        try:
+            features = self._build_multimodal_features(transcript, acoustic_features)
+            return self.tri_class_model.predict_probabilities(features)
+        except Exception as exc:
+            logger.warning("Tri-class emotion calibration failed: %s", exc)
+            return None
 
     def _sensevoice_raw_scores(self, emotion_tag: str) -> Dict[str, float]:
         scores = {

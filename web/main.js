@@ -102,6 +102,50 @@ const api = {
       method: 'POST',
     });
   },
+
+  async getDebugAudio(limit = 30) {
+    return this.request(`/v1/debug/audio?limit=${limit}`);
+  },
+
+  async labelDebugAudio(recordId, label) {
+    return this.request(`/v1/debug/audio/${recordId}/label`, {
+      method: 'POST',
+      body: JSON.stringify({ label }),
+    });
+  },
+
+  async getTrainingCorpus() {
+    return this.request('/v1/training/corpus');
+  },
+
+  async updateTrainingCorpus(ids, changes) {
+    return this.request('/v1/training/corpus/update', {
+      method: 'POST',
+      body: JSON.stringify({ ids, ...changes }),
+    });
+  },
+
+  async startTrainingJob(payload) {
+    return this.request('/v1/training/jobs', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+  },
+
+  async getCurrentTrainingJob() {
+    return this.request('/v1/training/jobs/current');
+  },
+
+  async getTrainingModels() {
+    return this.request('/v1/training/models');
+  },
+
+  async loadTrainingModel(version) {
+    return this.request('/v1/training/models/load', {
+      method: 'POST',
+      body: JSON.stringify({ version }),
+    });
+  },
   
   async createFamily(name) {
     return this.request('/v1/families', {
@@ -955,6 +999,8 @@ let debugLevelInterval;
 let debugCaptureSampleRate = 16000;
 let debugPeakLevel = 0;
 let debugRmsLevel = 0;
+let trainingCorpusItems = [];
+let trainingPollTimer;
 
 function setDebugBadge(selector, text, type = '') {
   const el = $(selector);
@@ -1026,6 +1072,11 @@ async function initModelDebugPage() {
   setDebugText('#debugApiBase', API_BASE_URL);
   await loadDebugMicrophones(false);
   await loadModelDebugStatus();
+  await Promise.all([
+    loadTrainingCorpus(),
+    loadTrainingJob(),
+    loadTrainingModels(),
+  ]);
 }
 
 async function loadDebugMicrophones(requestPermission = true) {
@@ -1061,6 +1112,7 @@ async function loadModelDebugStatus() {
     const info = await api.getSystemInfo();
     const model = info.emotion_model || {};
     const loaded = getActiveModelLoaded(model);
+    const calibratorLoaded = Boolean(model.tri_class_calibrator_loaded);
     const cudaText = model.torch_cuda_available
       ? `可用 ${model.torch_cuda_version || ''} ${model.cuda_device || ''}`.trim()
       : '不可用';
@@ -1068,9 +1120,14 @@ async function loadModelDebugStatus() {
     setDebugText('#debugBackend', model.backend);
     setDebugText('#debugDevice', model.device);
     setDebugText('#debugCuda', cudaText);
-    setDebugText('#debugLoaded', loaded ? '已加载' : '未加载');
+    setDebugText('#debugLoaded', loaded ? '主模型已加载' : calibratorLoaded ? '校准模型已加载' : '未加载');
     setDebugText('#debugModelId', getActiveModelId(model));
-    setDebugBadge('#modelDebugStatusBadge', loaded ? '模型已加载' : '模型未加载', loaded ? 'success' : 'warning');
+    setDebugText('#debugCalibratorVersion', model.tri_class_calibrator_version || '未加载');
+    setDebugBadge(
+      '#modelDebugStatusBadge',
+      loaded ? '主模型已加载' : calibratorLoaded ? '校准模型已加载' : '模型未加载',
+      loaded || calibratorLoaded ? 'success' : 'warning',
+    );
 
     if (model.sensevoice_load_error || model.caire_load_error) {
       appendDebugLog(`模型加载错误：${model.sensevoice_load_error || model.caire_load_error}`, 'error');
@@ -1440,6 +1497,7 @@ async function analyzeDebugRecording() {
     setDebugBadge('#debugResultState', '分析完成', 'success');
     appendDebugLog(`分析完成：value=${result.emotion_value} level=${result.emotion_level} backend=${result.model_backend}`);
     await loadModelDebugStatus();
+    await loadClientDebugAudio();
   } catch (error) {
     setDebugBadge('#debugResultState', '分析失败', 'danger');
     appendDebugLog(`分析失败：${error.message}`, 'error');
@@ -1453,6 +1511,7 @@ function renderDebugResult(result) {
   setDebugText('#debugConfidence', formatDebugValue(result.confidence));
   setDebugText('#debugAngerScore', formatDebugValue(result.anger_score));
   setDebugText('#debugSpeakerResult', `${result.speaker_id || '--'} (${formatDebugValue(result.speaker_confidence)})`);
+  setDebugText('#debugRecognizedTranscript', result.transcript || '--');
   renderDebugTable('#debugRawEmotions', result.raw_emotions);
   renderDebugTable('#debugAcousticFeatures', result.acoustic_features);
 
@@ -1460,6 +1519,299 @@ function renderDebugResult(result) {
   if (jsonEl) {
     jsonEl.textContent = JSON.stringify(result, null, 2);
   }
+}
+
+async function loadTrainingCorpus() {
+  const body = $('#corpusTableBody');
+  if (!body) return;
+  try {
+    const data = await api.getTrainingCorpus();
+    trainingCorpusItems = data.items || [];
+    renderTrainingCorpusSummary(data.summary || {});
+    renderTrainingCorpus();
+  } catch (error) {
+    body.innerHTML = `<tr><td colspan="6">读取语料失败：${escapeDebugHtml(error.message)}</td></tr>`;
+    appendDebugLog(`读取训练语料失败：${error.message}`, 'error');
+  }
+}
+
+function renderTrainingCorpusSummary(summary = {}) {
+  setDebugText('#corpusTotal', summary.total ?? trainingCorpusItems.length);
+  setDebugText('#corpusSelected', summary.selected ?? trainingCorpusItems.filter(item => item.selected).length);
+  setDebugText('#corpusLabeled', summary.selected_labeled ?? trainingCorpusItems.filter(item => item.selected && item.label !== null && item.label !== undefined).length);
+  setDebugText('#corpusSilent', summary.near_silent ?? trainingCorpusItems.filter(item => item.diagnostic?.near_silent).length);
+}
+
+function getVisibleTrainingCorpus() {
+  const source = $('#corpusSourceFilter')?.value || 'all';
+  const label = $('#corpusLabelFilter')?.value || 'all';
+  const query = ($('#corpusSearchInput')?.value || '').trim().toLowerCase();
+  return trainingCorpusItems.filter(item => {
+    if (source !== 'all' && item.kind !== source) return false;
+    if (label === 'unlabeled' && item.label !== null && item.label !== undefined) return false;
+    if (!['all', 'unlabeled'].includes(label) && Number(item.label) !== Number(label)) return false;
+    if (query) {
+      const haystack = `${item.filename} ${item.transcript} ${item.source}`.toLowerCase();
+      if (!haystack.includes(query)) return false;
+    }
+    return true;
+  });
+}
+
+function emotionLabelText(label) {
+  if (label === null || label === undefined || label === '') return '未标注';
+  if (Number(label) === -1) return '-1 负向';
+  if (Number(label) === 0) return '0 中性';
+  if (Number(label) === 1) return '1 正向';
+  return '未标注';
+}
+
+function renderTrainingCorpus() {
+  const body = $('#corpusTableBody');
+  if (!body) return;
+  const items = getVisibleTrainingCorpus();
+  if (items.length === 0) {
+    body.innerHTML = '<tr><td colspan="6">当前筛选条件下没有语料。</td></tr>';
+    return;
+  }
+  body.innerHTML = items.map(item => {
+    const diagnostic = item.diagnostic || {};
+    const audioUrl = `${API_BASE_URL}${item.audio_url}`;
+    const labelButtons = [-1, 0, 1].map(label => `
+      <button
+        class="corpus-label-button ${item.label !== null && item.label !== undefined && Number(item.label) === label ? 'active' : ''}"
+        data-corpus-label="${label}"
+        data-corpus-id="${escapeDebugHtml(item.id)}"
+        title="${emotionLabelText(label)}"
+      >${label}</button>
+    `).join('');
+    return `
+      <tr class="${diagnostic.near_silent ? 'corpus-row-silent' : ''}">
+        <td>
+          <input type="checkbox" data-corpus-select="${escapeDebugHtml(item.id)}" ${item.selected ? 'checked' : ''} />
+        </td>
+        <td><audio controls preload="metadata" src="${escapeDebugHtml(audioUrl)}"></audio></td>
+        <td>
+          <strong>${escapeDebugHtml(item.source)}</strong>
+          <span>${escapeDebugHtml(item.filename)}</span>
+        </td>
+        <td>
+          <textarea data-corpus-transcript="${escapeDebugHtml(item.id)}" rows="2">${escapeDebugHtml(item.transcript || '')}</textarea>
+        </td>
+        <td>
+          <div class="corpus-label-control">${labelButtons}</div>
+          <span>${escapeDebugHtml(emotionLabelText(item.label))}</span>
+        </td>
+        <td>
+          <span>RMS ${formatDebugValue(Number(diagnostic.rms || 0))}</span>
+          <span>峰值 ${formatDebugValue(Number(diagnostic.peak || 0))}</span>
+          <span>${formatDebugValue(Number(diagnostic.duration || 0))} 秒</span>
+          ${diagnostic.near_silent ? '<strong class="quality-danger">近似静音</strong>' : '<strong class="quality-ok">有效声音</strong>'}
+        </td>
+      </tr>
+    `;
+  }).join('');
+}
+
+async function updateTrainingCorpus(ids, changes, message) {
+  if (!ids.length) return;
+  try {
+    const result = await api.updateTrainingCorpus(ids, changes);
+    for (const item of trainingCorpusItems) {
+      if (!ids.includes(item.id)) continue;
+      Object.assign(item, changes);
+    }
+    renderTrainingCorpusSummary(result.summary || {});
+    renderTrainingCorpus();
+    if (message) appendDebugLog(message);
+  } catch (error) {
+    appendDebugLog(`更新语料失败：${error.message}`, 'error');
+    await loadTrainingCorpus();
+  }
+}
+
+async function startTraining() {
+  const button = $('#startTrainingBtn');
+  if (!button) return;
+  button.disabled = true;
+  try {
+    const job = await api.startTrainingJob({
+      version_name: $('#trainingVersionName')?.value.trim() || null,
+      test_ratio: Number($('#trainingTestRatio')?.value || 0.2),
+      activate_after_training: Boolean($('#activateAfterTraining')?.checked),
+    });
+    renderTrainingJob(job);
+    scheduleTrainingPoll();
+    appendDebugLog(`微调任务已启动：${job.version}`);
+  } catch (error) {
+    setDebugBadge('#trainingStatusBadge', '启动失败', 'danger');
+    appendDebugLog(`启动微调失败：${error.message}`, 'error');
+    button.disabled = false;
+  }
+}
+
+function scheduleTrainingPoll() {
+  clearTimeout(trainingPollTimer);
+  trainingPollTimer = setTimeout(loadTrainingJob, 900);
+}
+
+async function loadTrainingJob() {
+  try {
+    const data = await api.getCurrentTrainingJob();
+    renderTrainingJob(data.job);
+    if (data.job && ['queued', 'running'].includes(data.job.status)) {
+      scheduleTrainingPoll();
+    }
+  } catch (error) {
+    appendDebugLog(`读取训练进度失败：${error.message}`, 'error');
+  }
+}
+
+function renderTrainingJob(job) {
+  const startButton = $('#startTrainingBtn');
+  if (!job) {
+    setDebugBadge('#trainingStatusBadge', '空闲');
+    if (startButton) startButton.disabled = false;
+    return;
+  }
+  const running = ['queued', 'running'].includes(job.status);
+  const badgeType = job.status === 'completed' ? 'success' : job.status === 'failed' ? 'danger' : 'warning';
+  setDebugBadge('#trainingStatusBadge', job.status, badgeType);
+  setDebugText('#trainingProgressText', `${job.progress || 0}%`);
+  setDebugText('#trainingStageText', job.message || job.stage);
+  const fill = $('#trainingProgressFill');
+  if (fill) fill.style.width = `${job.progress || 0}%`;
+  if (startButton) startButton.disabled = running;
+  const log = $('#trainingLog');
+  if (log) {
+    log.innerHTML = (job.logs || []).slice(-40).reverse().map(message => `
+      <div class="debug-log-row"><span>${escapeDebugHtml(job.stage || '--')}</span><p>${escapeDebugHtml(message)}</p></div>
+    `).join('') || '<p class="debug-hint">暂无训练日志。</p>';
+  }
+  const metrics = $('#trainingMetrics');
+  if (metrics) metrics.textContent = JSON.stringify(job.metrics || { status: job.status, message: job.message }, null, 2);
+  if (job.status === 'completed') {
+    loadTrainingModels();
+    loadModelDebugStatus();
+  }
+}
+
+async function loadTrainingModels() {
+  const select = $('#modelVersionSelect');
+  const list = $('#modelVersionList');
+  if (!select || !list) return;
+  try {
+    const data = await api.getTrainingModels();
+    const items = data.items || [];
+    select.innerHTML = items.length
+      ? items.map(item => `<option value="${escapeDebugHtml(item.version)}">${escapeDebugHtml(item.version)}${item.active ? '（当前）' : ''}</option>`).join('')
+      : '<option value="">暂无微调模型</option>';
+    const active = items.find(item => item.active);
+    if (active) select.value = active.version;
+    list.innerHTML = items.length
+      ? items.map(item => `
+          <div class="model-version-row">
+            <div>
+              <strong>${escapeDebugHtml(item.version)}</strong>
+              <span>${escapeDebugHtml(item.created_at ? new Date(item.created_at).toLocaleString('zh-CN') : '--')}</span>
+            </div>
+            <span>训练 ${escapeDebugHtml(item.metrics?.train_samples ?? '--')} / 测试 ${escapeDebugHtml(item.metrics?.test_samples ?? '--')}</span>
+            <span>测试准确率 ${escapeDebugHtml(item.metrics?.test_accuracy === undefined ? '--' : Number(item.metrics.test_accuracy).toFixed(3))}</span>
+            ${item.active ? '<strong class="quality-ok">当前加载</strong>' : ''}
+          </div>
+        `).join('')
+      : '<p class="debug-hint">暂无微调模型版本。</p>';
+  } catch (error) {
+    list.innerHTML = `<p class="debug-hint">读取模型版本失败：${escapeDebugHtml(error.message)}</p>`;
+  }
+}
+
+async function loadSelectedTrainingModel() {
+  const version = $('#modelVersionSelect')?.value;
+  if (!version) return;
+  try {
+    await api.loadTrainingModel(version);
+    appendDebugLog(`已加载模型版本：${version}`);
+    await Promise.all([loadTrainingModels(), loadModelDebugStatus()]);
+  } catch (error) {
+    appendDebugLog(`加载模型版本失败：${error.message}`, 'error');
+  }
+}
+
+async function loadClientDebugAudio() {
+  const container = $('#clientAudioList');
+  if (!container) return;
+
+  try {
+    const data = await api.getDebugAudio(30);
+    const items = data.items || [];
+    if (items.length === 0) {
+      container.innerHTML = '<p class="debug-hint">还没有客户端上传记录。请先在手机 App 录制并分析一次。</p>';
+      return;
+    }
+
+    container.innerHTML = items.map(renderClientAudioItem).join('');
+  } catch (error) {
+    container.innerHTML = `<p class="debug-hint">读取客户端上传记录失败：${escapeDebugHtml(error.message)}</p>`;
+    appendDebugLog(`读取客户端上传记录失败：${error.message}`, 'error');
+  }
+}
+
+function renderClientAudioItem(item) {
+  const result = item.result || {};
+  const audioUrl = `${API_BASE_URL}${item.audio_url}`;
+  const createdAt = item.created_at ? new Date(item.created_at).toLocaleString('zh-CN') : '--';
+  const audioSize = item.audio_bytes ? `${(item.audio_bytes / 1024).toFixed(1)} KB` : '--';
+  const duration = item.audio_duration_ms ? `${(item.audio_duration_ms / 1000).toFixed(2)} 秒` : '--';
+  const rawTop = result.raw_emotions
+    ? Object.entries(result.raw_emotions)
+        .sort((a, b) => Number(b[1]) - Number(a[1]))
+        .slice(0, 4)
+        .map(([key, value]) => `${key} ${formatDebugValue(value)}`)
+        .join(' / ')
+    : '--';
+
+  return `
+    <article class="client-audio-item">
+      <div class="client-audio-header">
+        <div>
+          <strong>${escapeDebugHtml(item.source || 'unknown')}</strong>
+          <span>${escapeDebugHtml(createdAt)}</span>
+        </div>
+        <span class="status-badge">${escapeDebugHtml(result.model_backend || '--')}</span>
+      </div>
+      <audio controls src="${audioUrl}"></audio>
+      <div class="client-audio-metrics">
+        <div><span>情绪值</span><strong>${escapeDebugHtml(formatDebugValue(result.emotion_value))}</strong></div>
+        <div><span>愤怒强度</span><strong>${escapeDebugHtml(result.emotion_level || '--')}</strong></div>
+        <div><span>置信度</span><strong>${escapeDebugHtml(formatDebugValue(result.confidence))}</strong></div>
+        <div><span>文件</span><strong>${escapeDebugHtml(audioSize)}</strong></div>
+        <div><span>时长</span><strong>${escapeDebugHtml(duration)}</strong></div>
+        <div><span>说话人</span><strong>${escapeDebugHtml(result.speaker_id || item.speaker_id || '--')}</strong></div>
+      </div>
+      <p class="debug-hint">Top: ${escapeDebugHtml(rawTop)}</p>
+      ${item.transcript ? `<p class="debug-hint">文本：${escapeDebugHtml(item.transcript)}</p>` : ''}
+      <div class="client-audio-labels">
+        <span>人工标签：${item.human_label === undefined ? '未标注' : escapeDebugHtml(formatDebugValue(item.human_label))}</span>
+        <button data-debug-record="${escapeDebugHtml(item.id)}" data-debug-label="-1" class="btn-small">-1 负向</button>
+        <button data-debug-record="${escapeDebugHtml(item.id)}" data-debug-label="0" class="btn-small">0 中性</button>
+        <button data-debug-record="${escapeDebugHtml(item.id)}" data-debug-label="1" class="btn-small">1 正向</button>
+      </div>
+      <details>
+        <summary>完整结果 JSON</summary>
+        <pre class="debug-json">${escapeDebugHtml(JSON.stringify(item, null, 2))}</pre>
+      </details>
+    </article>
+  `;
+}
+
+function escapeDebugHtml(value) {
+  return String(value ?? '')
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#039;');
 }
 
 // 事件监听
@@ -1493,6 +1845,49 @@ function initEventListeners() {
     const log = $('#debugLog');
     if (log) log.innerHTML = '';
   });
+  $('#refreshCorpusBtn')?.addEventListener('click', loadTrainingCorpus);
+  $('#corpusSourceFilter')?.addEventListener('change', renderTrainingCorpus);
+  $('#corpusLabelFilter')?.addEventListener('change', renderTrainingCorpus);
+  $('#corpusSearchInput')?.addEventListener('input', renderTrainingCorpus);
+  $('#selectVisibleCorpusBtn')?.addEventListener('click', () => {
+    const ids = getVisibleTrainingCorpus().map(item => item.id);
+    updateTrainingCorpus(ids, { selected: true }, `已勾选当前结果：${ids.length} 条`);
+  });
+  $('#clearVisibleCorpusBtn')?.addEventListener('click', () => {
+    const ids = getVisibleTrainingCorpus().map(item => item.id);
+    updateTrainingCorpus(ids, { selected: false }, `已取消当前结果：${ids.length} 条`);
+  });
+  $('#corpusTableBody')?.addEventListener('change', event => {
+    const checkbox = event.target.closest('[data-corpus-select]');
+    if (checkbox) {
+      updateTrainingCorpus(
+        [checkbox.dataset.corpusSelect],
+        { selected: checkbox.checked },
+        `${checkbox.checked ? '勾选' : '取消'}语料：${checkbox.dataset.corpusSelect}`,
+      );
+      return;
+    }
+    const transcript = event.target.closest('[data-corpus-transcript]');
+    if (transcript) {
+      updateTrainingCorpus(
+        [transcript.dataset.corpusTranscript],
+        { transcript: transcript.value.trim() },
+        `已更新文本：${transcript.dataset.corpusTranscript}`,
+      );
+    }
+  });
+  $('#corpusTableBody')?.addEventListener('click', event => {
+    const button = event.target.closest('[data-corpus-id][data-corpus-label]');
+    if (!button) return;
+    updateTrainingCorpus(
+      [button.dataset.corpusId],
+      { label: Number(button.dataset.corpusLabel), selected: true },
+      `人工标注：${button.dataset.corpusId} -> ${button.dataset.corpusLabel}`,
+    );
+  });
+  $('#startTrainingBtn')?.addEventListener('click', startTraining);
+  $('#refreshModelVersionsBtn')?.addEventListener('click', loadTrainingModels);
+  $('#loadModelVersionBtn')?.addEventListener('click', loadSelectedTrainingModel);
   
   // 模拟控制
   $('#simAngerScore')?.addEventListener('input', (e) => {

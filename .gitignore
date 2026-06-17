@@ -9,3 +9,7 @@ __pycache__/
 *.mp3
 *.flac
 training/data/multimodal_corpus/wav/
+backend/debug_audio/
+backend/training_workspace/
+logs/
+.playwright-cli/

@@ -5,6 +5,7 @@ import logging
 import os
 import uuid
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any, Optional
 
 import jwt
@@ -14,6 +15,7 @@ import numpy as np
 logger = logging.getLogger(__name__)
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, WebSocket, WebSocketDisconnect, UploadFile, File
+from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from sqlalchemy import case, func, select, desc
@@ -26,10 +28,17 @@ from .models import (
     EmotionLevel
 )
 from .emotion_engine import EmotionAnalyzer, VoiceRecognizer, FeedbackGenerator, AudioProcessor
+from .training_service import TrainingService
 
 APP_VERSION = "2.0.0"
 JWT_SECRET = os.getenv("JWT_SECRET", "dev-secret-change-me")
 JWT_EXPIRE_MINUTES = int(os.getenv("JWT_EXPIRE_MINUTES", "120"))
+REPO_ROOT = Path(__file__).resolve().parents[2]
+BACKEND_ROOT = Path(__file__).resolve().parents[1]
+DEBUG_AUDIO_DIR = Path(os.getenv("DEBUG_AUDIO_DIR", "debug_audio"))
+if not DEBUG_AUDIO_DIR.is_absolute():
+    DEBUG_AUDIO_DIR = BACKEND_ROOT / DEBUG_AUDIO_DIR
+DEBUG_AUDIO_MAX_ITEMS = int(os.getenv("DEBUG_AUDIO_MAX_ITEMS", "100"))
 
 app = FastAPI(title="SofterPlease API", version=APP_VERSION)
 
@@ -45,6 +54,11 @@ emotion_analyzer = EmotionAnalyzer()
 voice_recognizer = VoiceRecognizer()
 feedback_generator = FeedbackGenerator()
 audio_processor = AudioProcessor()
+training_service = TrainingService(
+    REPO_ROOT,
+    DEBUG_AUDIO_DIR,
+    on_model_ready=lambda path, version: emotion_analyzer.load_tri_class_calibrator(str(path), version),
+)
 
 
 # ==================== Pydantic Models ====================
@@ -145,8 +159,31 @@ class EmotionAnalysisResponse(BaseModel):
     confidence: float
     model_backend: str
     raw_emotions: dict
+    transcript: str
     speaker_id: str
     speaker_confidence: float
+
+
+class DebugAudioLabelRequest(BaseModel):
+    label: int = Field(ge=-1, le=1)
+    note: Optional[str] = None
+
+
+class CorpusUpdateRequest(BaseModel):
+    ids: list[str] = Field(min_length=1)
+    selected: Optional[bool] = None
+    label: Optional[int] = Field(default=None, ge=-1, le=1)
+    transcript: Optional[str] = None
+
+
+class TrainingJobRequest(BaseModel):
+    version_name: Optional[str] = None
+    test_ratio: float = Field(default=0.2, ge=0.1, le=0.5)
+    activate_after_training: bool = True
+
+
+class ModelVersionLoadRequest(BaseModel):
+    version: str = Field(min_length=1)
 
 
 class FeedbackResponse(BaseModel):
@@ -207,6 +244,99 @@ def get_db() -> Session:
 
 def now_utc() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def safe_audio_suffix(filename: str | None) -> str:
+    if not filename or "." not in filename:
+        return ".wav"
+    suffix = Path(filename).suffix.lower()
+    if suffix in {".wav", ".mp3", ".m4a", ".webm", ".ogg", ".flac", ".aac"}:
+        return suffix
+    return ".wav"
+
+
+def save_debug_audio_record(
+    *,
+    audio_data: bytes,
+    filename: str | None,
+    session_id: str,
+    family_id: str,
+    user_id: str,
+    speaker_id: str,
+    transcript: str,
+    source: str,
+    emotion_payload: dict[str, Any],
+    audio_duration_ms: int,
+    sample_rate: int,
+) -> None:
+    try:
+        DEBUG_AUDIO_DIR.mkdir(parents=True, exist_ok=True)
+        record_id = str(uuid.uuid4())
+        created_at = now_utc()
+        suffix = safe_audio_suffix(filename)
+        audio_name = f"{created_at.strftime('%Y%m%dT%H%M%S')}_{record_id}{suffix}"
+        audio_path = DEBUG_AUDIO_DIR / audio_name
+        audio_path.write_bytes(audio_data)
+
+        metadata = {
+            "id": record_id,
+            "created_at": created_at.isoformat(),
+            "session_id": session_id,
+            "family_id": family_id,
+            "user_id": user_id,
+            "speaker_id": speaker_id,
+            "transcript": transcript,
+            "source": source,
+            "filename": filename or audio_name,
+            "audio_file": audio_name,
+            "audio_url": f"/v1/debug/audio/{record_id}/file",
+            "audio_bytes": len(audio_data),
+            "audio_duration_ms": audio_duration_ms,
+            "sample_rate": sample_rate,
+            "result": emotion_payload,
+        }
+        (DEBUG_AUDIO_DIR / f"{record_id}.json").write_text(
+            json_dumps(metadata),
+            encoding="utf-8",
+        )
+        prune_debug_audio_records()
+    except Exception as exc:
+        logger.warning("Failed to save debug audio record: %s", exc)
+
+
+def json_dumps(payload: dict[str, Any]) -> str:
+    import json
+
+    return json.dumps(payload, ensure_ascii=False, indent=2, default=str)
+
+
+def read_debug_audio_records(limit: int = 30) -> list[dict[str, Any]]:
+    import json
+
+    if not DEBUG_AUDIO_DIR.exists():
+        return []
+
+    records = []
+    for meta_path in DEBUG_AUDIO_DIR.glob("*.json"):
+        try:
+            records.append(json.loads(meta_path.read_text(encoding="utf-8")))
+        except Exception as exc:
+            logger.warning("Failed to read debug audio metadata %s: %s", meta_path, exc)
+
+    records.sort(key=lambda item: item.get("created_at", ""), reverse=True)
+    return records[:limit]
+
+
+def prune_debug_audio_records() -> None:
+    records = read_debug_audio_records(limit=DEBUG_AUDIO_MAX_ITEMS + 50)
+    for stale in records[DEBUG_AUDIO_MAX_ITEMS:]:
+        try:
+            audio_file = stale.get("audio_file")
+            if audio_file:
+                (DEBUG_AUDIO_DIR / audio_file).unlink(missing_ok=True)
+            (DEBUG_AUDIO_DIR / f"{stale['id']}.json").unlink(missing_ok=True)
+        except Exception as exc:
+            logger.warning("Failed to prune debug audio record: %s", exc)
 
 
 def issue_jwt(user_id: str) -> str:
@@ -279,6 +409,18 @@ def elapsed_ms(start: datetime, end: datetime) -> int:
 
 # ==================== Health Check ====================
 
+@app.get("/")
+def root() -> dict[str, Any]:
+    return {
+        "name": "SofterPlease API",
+        "version": APP_VERSION,
+        "status": "running",
+        "docs": "/docs",
+        "health": "/health",
+        "system_info": "/v1/system/info",
+    }
+
+
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok", "version": APP_VERSION}
@@ -310,6 +452,129 @@ def load_emotion_model() -> dict[str, Any]:
     loaded = emotion_analyzer.ensure_model_loaded()
     return {
         "loaded": loaded,
+        "emotion_model": emotion_analyzer.get_status(),
+    }
+
+
+@app.get("/v1/debug/audio")
+def list_debug_audio(limit: int = Query(default=30, ge=1, le=100)) -> dict[str, Any]:
+    return {
+        "items": read_debug_audio_records(limit=limit),
+    }
+
+
+@app.get("/v1/debug/audio/{record_id}/file")
+def get_debug_audio_file(record_id: str) -> FileResponse:
+    records = read_debug_audio_records(limit=DEBUG_AUDIO_MAX_ITEMS)
+    record = next((item for item in records if item.get("id") == record_id), None)
+    if not record:
+        raise HTTPException(status_code=404, detail="debug audio not found")
+
+    audio_file = record.get("audio_file")
+    if not audio_file:
+        raise HTTPException(status_code=404, detail="debug audio file missing")
+
+    audio_path = DEBUG_AUDIO_DIR / audio_file
+    if not audio_path.exists() or not audio_path.is_file():
+        raise HTTPException(status_code=404, detail="debug audio file missing")
+
+    media_types = {
+        ".wav": "audio/wav",
+        ".mp3": "audio/mpeg",
+        ".m4a": "audio/mp4",
+        ".webm": "audio/webm",
+        ".ogg": "audio/ogg",
+        ".flac": "audio/flac",
+        ".aac": "audio/aac",
+    }
+    return FileResponse(
+        path=audio_path,
+        media_type=media_types.get(audio_path.suffix.lower(), "application/octet-stream"),
+        filename=record.get("filename") or audio_file,
+    )
+
+
+@app.post("/v1/debug/audio/{record_id}/label")
+def label_debug_audio(record_id: str, payload: DebugAudioLabelRequest) -> dict[str, Any]:
+    import json
+
+    metadata_path = DEBUG_AUDIO_DIR / f"{record_id}.json"
+    if not metadata_path.exists():
+        raise HTTPException(status_code=404, detail="debug audio not found")
+
+    record = json.loads(metadata_path.read_text(encoding="utf-8"))
+    record["human_label"] = payload.label
+    record["label_note"] = payload.note or ""
+    record["labeled_at"] = now_utc().isoformat()
+    metadata_path.write_text(json_dumps(record), encoding="utf-8")
+    return record
+
+
+# ==================== Corpus Training APIs ====================
+
+@app.get("/v1/training/corpus")
+def list_training_corpus() -> dict[str, Any]:
+    return {
+        "items": training_service.list_corpus(),
+        "summary": training_service.corpus_summary(),
+    }
+
+
+@app.post("/v1/training/corpus/update")
+def update_training_corpus(payload: CorpusUpdateRequest) -> dict[str, Any]:
+    summary = training_service.update_corpus(
+        payload.ids,
+        selected=payload.selected,
+        label=payload.label,
+        transcript=payload.transcript,
+    )
+    return {"updated": len(payload.ids), "summary": summary}
+
+
+@app.get("/v1/training/corpus/synthetic/audio")
+def get_synthetic_corpus_audio(path: str = Query(min_length=1)) -> FileResponse:
+    try:
+        audio_path = training_service.resolve_synthetic_audio(path)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="synthetic audio not found") from exc
+    return FileResponse(path=audio_path, media_type="audio/wav", filename=audio_path.name)
+
+
+@app.post("/v1/training/jobs")
+def start_training_job(payload: TrainingJobRequest) -> dict[str, Any]:
+    try:
+        return training_service.start_job(
+            payload.version_name,
+            payload.test_ratio,
+            payload.activate_after_training,
+        )
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.get("/v1/training/jobs/current")
+def get_current_training_job() -> dict[str, Any]:
+    return {"job": training_service.get_job()}
+
+
+@app.get("/v1/training/models")
+def list_training_models() -> dict[str, Any]:
+    return {
+        "items": training_service.list_models(),
+        "active_model": emotion_analyzer.get_status().get("tri_class_calibrator_version"),
+    }
+
+
+@app.post("/v1/training/models/load")
+def load_training_model_version(payload: ModelVersionLoadRequest) -> dict[str, Any]:
+    try:
+        path = training_service.activate_model(payload.version)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="model version not found") from exc
+    return {
+        "loaded": True,
+        "version": payload.version,
+        "path": str(path),
         "emotion_model": emotion_analyzer.get_status(),
     }
 
@@ -898,6 +1163,7 @@ async def analyze_emotion(
     
     # 情绪分析
     emotion_result = emotion_analyzer.analyze(processed.audio, transcript, processed.sample_rate)
+    effective_transcript = transcript.strip() or emotion_result.transcript
     
     # 保存到数据库
     emotion_event = EmotionEvent(
@@ -907,7 +1173,7 @@ async def analyze_emotion(
         speaker_confidence=voice_result.confidence,
         ts=now_utc(),
         audio_duration_ms=int(processed.get_total_speech_duration() * 1000),
-        transcript=transcript,
+        transcript=effective_transcript,
         anger_score=emotion_result.anger_score,
         emotion_level=emotion_result.emotion_level,
         emotion_dimensions=emotion_result.to_dict()["emotion_dimensions"],
@@ -928,7 +1194,7 @@ async def analyze_emotion(
     
     db.commit()
     
-    return EmotionAnalysisResponse(
+    response = EmotionAnalysisResponse(
         anger_score=emotion_result.anger_score,
         emotion_level=emotion_result.emotion_level,
         emotion_value=emotion_result.emotion_value,
@@ -937,9 +1203,24 @@ async def analyze_emotion(
         confidence=emotion_result.confidence,
         model_backend=emotion_result.model_backend,
         raw_emotions=emotion_result.raw_emotions,
+        transcript=effective_transcript,
         speaker_id=detected_speaker,
         speaker_confidence=voice_result.confidence,
     )
+    save_debug_audio_record(
+        audio_data=audio_data,
+        filename=audio.filename,
+        session_id=session_id,
+        family_id=family_id,
+        user_id=user_id,
+        speaker_id=detected_speaker,
+        transcript=effective_transcript,
+        source=session.device_type,
+        emotion_payload=response.model_dump(),
+        audio_duration_ms=int(processed.get_total_speech_duration() * 1000),
+        sample_rate=processed.sample_rate,
+    )
+    return response
 
 
 # ==================== Feedback APIs ====================

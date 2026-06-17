@@ -4,6 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>SofterPlease - 家庭情绪助手</title>
+    <link rel="icon" href="data:," />
     <link rel="stylesheet" href="./style.css" />
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
   </head>
@@ -326,6 +327,10 @@
                     <dt>模型 ID</dt>
                     <dd id="debugModelId">--</dd>
                   </div>
+                  <div>
+                    <dt>校准版本</dt>
+                    <dd id="debugCalibratorVersion">--</dd>
+                  </div>
                 </dl>
               </section>
 
@@ -390,7 +395,7 @@
                   <strong id="debugEmotionValue">--</strong>
                 </div>
                 <div class="debug-metric">
-                  <span>情绪等级</span>
+                  <span>愤怒强度等级</span>
                   <strong id="debugEmotionLevel">--</strong>
                 </div>
                 <div class="debug-metric">
@@ -408,6 +413,10 @@
                 <div class="debug-metric">
                   <span>说话人</span>
                   <strong id="debugSpeakerResult">--</strong>
+                </div>
+                <div class="debug-metric">
+                  <span>识别文本</span>
+                  <strong id="debugRecognizedTranscript">--</strong>
                 </div>
               </div>
               <div class="debug-columns">
@@ -430,6 +439,117 @@
                 <button id="clearDebugLogBtn" class="btn-small">清空</button>
               </div>
               <div id="debugLog" class="debug-log"></div>
+            </section>
+
+            <section class="model-debug-panel full-width">
+              <div class="panel-heading">
+                <h3>语料标注与选择</h3>
+                <div class="model-debug-actions">
+                  <button id="selectVisibleCorpusBtn" class="btn-secondary">勾选当前结果</button>
+                  <button id="clearVisibleCorpusBtn" class="btn-secondary">取消当前结果</button>
+                  <button id="refreshCorpusBtn" class="btn-secondary">刷新语料</button>
+                </div>
+              </div>
+              <div class="corpus-summary-grid">
+                <div><span>语料总数</span><strong id="corpusTotal">--</strong></div>
+                <div><span>已勾选</span><strong id="corpusSelected">--</strong></div>
+                <div><span>已标注</span><strong id="corpusLabeled">--</strong></div>
+                <div><span>近似静音</span><strong id="corpusSilent">--</strong></div>
+              </div>
+              <div class="corpus-toolbar">
+                <label>
+                  来源
+                  <select id="corpusSourceFilter">
+                    <option value="all">全部</option>
+                    <option value="uploaded">手机 / Web 上传</option>
+                    <option value="synthetic">合成语料</option>
+                  </select>
+                </label>
+                <label>
+                  标签
+                  <select id="corpusLabelFilter">
+                    <option value="all">全部</option>
+                    <option value="unlabeled">未标注</option>
+                    <option value="-1">-1 负向</option>
+                    <option value="0">0 中性</option>
+                    <option value="1">1 正向</option>
+                  </select>
+                </label>
+                <label>
+                  搜索
+                  <input id="corpusSearchInput" type="search" placeholder="文件名、文本或来源" />
+                </label>
+              </div>
+              <div class="corpus-table-wrap">
+                <table class="corpus-table">
+                  <thead>
+                    <tr>
+                      <th>使用</th>
+                      <th>试听</th>
+                      <th>来源 / 文件</th>
+                      <th>文本</th>
+                      <th>标签</th>
+                      <th>音频质量</th>
+                    </tr>
+                  </thead>
+                  <tbody id="corpusTableBody">
+                    <tr><td colspan="6">正在读取语料...</td></tr>
+                  </tbody>
+                </table>
+              </div>
+            </section>
+
+            <section class="model-debug-panel full-width">
+              <div class="panel-heading">
+                <h3>微调训练</h3>
+                <span id="trainingStatusBadge" class="status-badge">空闲</span>
+              </div>
+              <div class="training-toolbar">
+                <label>
+                  模型版本
+                  <input id="trainingVersionName" type="text" placeholder="例如 family-v2" />
+                </label>
+                <label>
+                  测试集比例
+                  <input id="trainingTestRatio" type="number" min="0.1" max="0.5" step="0.05" value="0.2" />
+                </label>
+                <label class="training-toggle">
+                  <input id="activateAfterTraining" type="checkbox" checked />
+                  训练后加载
+                </label>
+                <button id="startTrainingBtn" class="btn-primary">开始微调</button>
+              </div>
+              <div class="training-progress">
+                <div class="training-progress-track"><div id="trainingProgressFill"></div></div>
+                <strong id="trainingProgressText">0%</strong>
+                <span id="trainingStageText">等待开始</span>
+              </div>
+              <div class="training-result-grid">
+                <div>
+                  <h4>训练过程</h4>
+                  <div id="trainingLog" class="debug-log"></div>
+                </div>
+                <div>
+                  <h4>训练结果</h4>
+                  <pre id="trainingMetrics" class="debug-json">{}</pre>
+                </div>
+              </div>
+            </section>
+
+            <section class="model-debug-panel full-width">
+              <div class="panel-heading">
+                <h3>模型版本</h3>
+                <button id="refreshModelVersionsBtn" class="btn-secondary">刷新版本</button>
+              </div>
+              <div class="model-version-toolbar">
+                <select id="modelVersionSelect">
+                  <option value="">暂无微调模型</option>
+                </select>
+                <button id="loadModelVersionBtn" class="btn-primary">加载所选版本</button>
+              </div>
+              <div id="modelVersionList" class="model-version-list">
+                <p class="debug-hint">暂无微调模型版本。</p>
+              </div>
             </section>
           </div>
 

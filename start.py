@@ -34,25 +34,44 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--python", dest="python_bin", help="Python executable for backend/web commands.")
     parser.add_argument("--emotion-backend", help="Set EMOTION_BACKEND, for example sensevoice, caire, rule.")
     parser.add_argument("--install", action="store_true", help="Install backend requirements before starting.")
+    parser.add_argument("--reload", action="store_true", help="Enable Uvicorn source-code auto reload.")
     parser.add_argument("--no-backend", action="store_true", help="Do not start the backend.")
     parser.add_argument("--no-web", action="store_true", help="Do not start the web UI.")
     parser.add_argument("--no-open", action="store_true", help="Do not open the web UI in a browser.")
     return parser.parse_args()
 
 
-def find_python(explicit: str | None) -> str:
+def supports_backend(python_bin: str) -> bool:
+    result = subprocess.run(
+        [python_bin, "-c", "import fastapi, uvicorn"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
+    return result.returncode == 0
+
+
+def find_python(explicit: str | None, allow_missing_dependencies: bool = False) -> str:
     if explicit:
-        return explicit
+        if allow_missing_dependencies or supports_backend(explicit):
+            return explicit
+        raise RuntimeError(f"Python does not contain backend dependencies: {explicit}")
 
     if os.name == "nt":
         venv_python = ROOT / ".venv" / "Scripts" / "python.exe"
     else:
         venv_python = ROOT / ".venv" / "bin" / "python"
 
-    if venv_python.exists():
+    if venv_python.exists() and (allow_missing_dependencies or supports_backend(str(venv_python))):
         return str(venv_python)
 
-    return sys.executable
+    if allow_missing_dependencies or supports_backend(sys.executable):
+        return sys.executable
+
+    raise RuntimeError(
+        "No Python environment with FastAPI and Uvicorn was found. "
+        "Run this launcher with --install or install backend/requirements.txt."
+    )
 
 
 def local_url(port: int) -> str:
@@ -128,12 +147,13 @@ def start_backend(args: argparse.Namespace, python_bin: str, env: dict[str, str]
         "-m",
         "uvicorn",
         "app.main:app",
-        "--reload",
         "--host",
         args.backend_host,
         "--port",
         str(args.backend_port),
     ]
+    if args.reload:
+        command.append("--reload")
     return start_process("backend", command, BACKEND_DIR, env)
 
 
@@ -195,8 +215,17 @@ def print_urls(args: argparse.Namespace) -> None:
 
 
 def main() -> int:
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(
+                encoding="utf-8",
+                errors="replace",
+                line_buffering=True,
+                write_through=True,
+            )
+
     args = parse_args()
-    python_bin = find_python(args.python_bin)
+    python_bin = find_python(args.python_bin, allow_missing_dependencies=args.install)
     env = os.environ.copy()
     env["PYTHONUNBUFFERED"] = "1"
     if args.emotion_backend:
@@ -204,6 +233,7 @@ def main() -> int:
 
     if args.install:
         run_install(python_bin)
+    print(f"[setup] Python: {python_bin}")
 
     processes: list[subprocess.Popen] = []
     backend = start_backend(args, python_bin, env)
