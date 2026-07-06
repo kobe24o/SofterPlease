@@ -15,6 +15,18 @@
 - 👨‍👩‍👧‍👦 **家庭共享** - 多人参与，共同见证改变
 - 🔒 **隐私保护** - 端到端加密，数据安全保障
 
+### 长录音与家庭角色
+
+- Android 客户端单次可录制最长 10 分钟，达到上限自动停止。
+- 后端先用 VAD 按停顿切句，再把超长语句限制在 25 秒以内，以匹配 SenseVoice 单段推理能力。
+- 同次录音根据声纹 embedding 自动聚类说话人；用户确认某句角色后，会更新该家庭成员的声纹档案，并自动归类相似语句。
+- 未知说话人会获得家庭内稳定的 `spk_xxx` ID。用户可重命名显示名称；后续相同音色及历史同 ID 数据会自动归入该档案。
+- 说话人 embedding 默认使用 FunASR CAM++ 192 维声纹模型；连续语音最多按 8 秒窗口切分后聚类。旧声纹会从已保存音频自动迁移，无需重新标注。
+- 每句独立保存 WAV、起止时间、转写、情绪值、模型后端、原始情绪分布、声学特征、预测角色和人工校正角色。
+- 统计页可将当天对话及本周/上周趋势交给用户配置的 OpenAI 兼容大模型生成家庭沟通建议。API Key 仅加密保存在手机本地，服务端不持久化。
+- 统计页按说话人展示每日正/中/负次数和整数情绪总分，并可下钻回听每句音频、查看时间、文本与模型结果。大模型建议按每个 speaker ID 分别输出，并在客户端渲染 Markdown。
+- OpenAI 兼容建议接口支持讯飞 MaaS `/v2` 地址，后端直连而不继承电脑 VPN/代理环境，并提供 180 秒读取超时、服务商错误详情及手机端连接测试。
+
 ## 技术架构
 
 ```
@@ -215,6 +227,13 @@ flutter build ios --release
 - `POST /v1/families` - 创建家庭
 - `POST /v1/sessions/start` - 开始会话
 - `POST /v1/sessions/{id}/analyze` - 情绪分析
+- `POST /v1/sessions/{id}/analyze-long` - 长录音 VAD、逐句情绪与说话人分离
+- `GET /v1/sessions/{id}/segments` - 获取逐句完整记录
+- `POST /v1/conversation-segments/{id}/confirm-speaker` - 确认角色并学习声纹
+- `PATCH /v1/families/{family_id}/speakers/{speaker_id}` - 重命名并稳定归类说话人
+- `GET /v1/families/{family_id}/speaker-stats` - 按说话人和日期统计情绪
+- `GET /v1/families/{family_id}/speaker-records` - 查询说话人逐句详情
+- `POST /v1/advice/generate` - 生成家庭沟通与长期趋势建议
 - `GET /v1/reports/daily/{family_id}` - 日报数据
 - `WS /v1/realtime/ws` - WebSocket实时通信
 

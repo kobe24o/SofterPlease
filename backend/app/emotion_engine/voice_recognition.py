@@ -9,12 +9,18 @@
 
 from __future__ import annotations
 
+import logging
+import os
+import threading
 import numpy as np
 from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass
 import librosa
 import torch
 import torch.nn as nn
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -101,7 +107,7 @@ class VoiceRecognizer:
     """
     
     # 识别阈值
-    RECOGNITION_THRESHOLD = 0.65  # 低于此值视为未知说话人
+    RECOGNITION_THRESHOLD = 0.60  # CAM++ cosine threshold
     VERIFICATION_THRESHOLD = 0.75  # 验证阈值
     
     def __init__(
@@ -120,6 +126,11 @@ class VoiceRecognizer:
         # 初始化模型
         self.model = None
         self.use_ml_model = False
+        self.embedding_backend = os.getenv("SPEAKER_EMBEDDING_BACKEND", "campplus").strip().lower()
+        self.speaker_model_id = os.getenv("SPEAKER_MODEL_ID", "cam++")
+        self._speaker_model = None
+        self._speaker_model_error: Optional[str] = None
+        self._speaker_model_lock = threading.Lock()
         
         if model_path:
             try:
@@ -228,10 +239,55 @@ class VoiceRecognizer:
         # 预处理
         audio = self._preprocess_audio(audio)
         
+        if self.embedding_backend == "campplus" and self._ensure_speaker_model():
+            return self._extract_embedding_campplus(audio)
         if self.use_ml_model and self.model:
             return self._extract_embedding_ml(audio, self.sample_rate)
         else:
             return self._extract_embedding_rule_based(audio, self.sample_rate)
+
+    def _ensure_speaker_model(self) -> bool:
+        if self._speaker_model is not None:
+            return True
+        if self._speaker_model_error is not None:
+            return False
+        with self._speaker_model_lock:
+            if self._speaker_model is not None:
+                return True
+            try:
+                from funasr import AutoModel
+
+                device = "cuda:0" if torch.cuda.is_available() else "cpu"
+                self._speaker_model = AutoModel(
+                    model=self.speaker_model_id,
+                    device=device,
+                    disable_update=True,
+                )
+                self.embedding_dim = 192
+                logger.info("Loaded CAM++ speaker embedding model on %s", device)
+                return True
+            except Exception as exc:
+                self._speaker_model_error = f"{type(exc).__name__}: {exc}"
+                logger.exception("Failed to load speaker embedding model; using acoustic fallback")
+                return False
+
+    def ensure_model_loaded(self) -> bool:
+        """Eagerly load the configured speaker embedding model."""
+        if self.embedding_backend != "campplus":
+            return self.use_ml_model
+        return self._ensure_speaker_model()
+
+    def _extract_embedding_campplus(self, audio: np.ndarray) -> np.ndarray:
+        samples = np.asarray(audio, dtype=np.float32).reshape(-1)
+        minimum_samples = self.sample_rate
+        if samples.size < minimum_samples:
+            samples = np.pad(samples, (0, minimum_samples - samples.size))
+        result = self._speaker_model.generate(input=samples, disable_pbar=True)
+        embedding = result[0]["spk_embedding"]
+        if isinstance(embedding, torch.Tensor):
+            embedding = embedding.detach().cpu().numpy()
+        vector = np.asarray(embedding, dtype=np.float32).reshape(-1)
+        return vector / max(float(np.linalg.norm(vector)), 1e-8)
     
     def _preprocess_audio(self, audio: np.ndarray) -> np.ndarray:
         """音频预处理"""
@@ -467,4 +523,8 @@ class VoiceRecognizer:
             "recognition_threshold": self.RECOGNITION_THRESHOLD,
             "verification_threshold": self.VERIFICATION_THRESHOLD,
             "use_ml_model": self.use_ml_model,
+            "embedding_backend": "campplus" if self._speaker_model is not None else self.embedding_backend,
+            "speaker_model_id": self.speaker_model_id,
+            "speaker_model_loaded": self._speaker_model is not None,
+            "speaker_model_error": self._speaker_model_error,
         }

@@ -78,6 +78,25 @@ class VoiceProfile(Base):
     family: Mapped["Family"] = relationship("Family", back_populates="voice_profiles")
 
 
+class SpeakerIdentity(Base):
+    """Family-scoped speaker identity learned from acoustic embeddings."""
+    __tablename__ = "speaker_identities"
+    __table_args__ = (
+        UniqueConstraint("family_id", "display_name", name="uq_family_speaker_name"),
+        Index("idx_speaker_identity_family", "family_id", "updated_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    family_id: Mapped[str] = mapped_column(String(64), ForeignKey("families.id"), index=True)
+    display_name: Mapped[str] = mapped_column(String(64), nullable=False)
+    voice_embedding: Mapped[list] = mapped_column(JSON, default=list)
+    embedding_version: Mapped[str] = mapped_column(String(32), default="acoustic-v1")
+    sample_count: Mapped[int] = mapped_column(Integer, default=0)
+    total_duration_ms: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
+
+
 class Family(Base):
     __tablename__ = "families"
 
@@ -223,6 +242,69 @@ class EmotionEvent(Base):
     # Relationships
     session: Mapped["Session"] = relationship("Session", back_populates="emotion_events")
     feedback: Mapped["FeedbackEvent"] = relationship("FeedbackEvent", back_populates="emotion_event", foreign_keys="FeedbackEvent.emotion_event_id")
+
+
+class ConversationSegment(Base):
+    """A VAD-delimited utterance with reproducible model and speaker metadata."""
+    __tablename__ = "conversation_segments"
+    __table_args__ = (
+        Index("idx_conversation_family_created", "family_id", "created_at"),
+        Index("idx_conversation_session_sequence", "session_id", "sequence_index"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    session_id: Mapped[str] = mapped_column(String(64), ForeignKey("sessions.id"), index=True)
+    family_id: Mapped[str] = mapped_column(String(64), ForeignKey("families.id"), index=True)
+    emotion_event_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("emotion_events.id"), nullable=True)
+    sequence_index: Mapped[int] = mapped_column(Integer)
+    started_at_ms: Mapped[int] = mapped_column(Integer)
+    ended_at_ms: Mapped[int] = mapped_column(Integer)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+    audio_storage_path: Mapped[str] = mapped_column(String(512))
+    audio_sample_rate: Mapped[int] = mapped_column(Integer, default=16000)
+    transcript: Mapped[str] = mapped_column(Text, default="")
+    transcript_confidence: Mapped[float] = mapped_column(Float, default=0.0)
+    language: Mapped[str] = mapped_column(String(16), default="zh")
+
+    emotion_value: Mapped[int] = mapped_column(Integer, default=0)
+    emotion_label: Mapped[str] = mapped_column(String(32), default="neutral")
+    anger_score: Mapped[float] = mapped_column(Float, default=0.0)
+    emotion_level: Mapped[str] = mapped_column(String(16), default="calm")
+    valence: Mapped[float] = mapped_column(Float, default=0.0)
+    arousal: Mapped[float] = mapped_column(Float, default=0.0)
+    dominance: Mapped[float] = mapped_column(Float, default=0.0)
+    stress: Mapped[float] = mapped_column(Float, default=0.0)
+    impatience: Mapped[float] = mapped_column(Float, default=0.0)
+    emotion_confidence: Mapped[float] = mapped_column(Float, default=0.0)
+    model_backend: Mapped[str] = mapped_column(String(64), default="unknown")
+    raw_emotions: Mapped[dict] = mapped_column(JSON, default=dict)
+    acoustic_features: Mapped[dict] = mapped_column(JSON, default=dict)
+
+    speaker_embedding: Mapped[list] = mapped_column(JSON, default=list)
+    speaker_cluster: Mapped[str] = mapped_column(String(32), default="speaker_1")
+    predicted_speaker_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    speaker_confidence: Mapped[float] = mapped_column(Float, default=0.0)
+    corrected_speaker_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    role_confirmed: Mapped[bool] = mapped_column(default=False)
+    assignment_source: Mapped[str] = mapped_column(String(32), default="cluster")
+    source: Mapped[str] = mapped_column(String(32), default="mobile")
+
+
+class AdviceReport(Base):
+    """Generated family guidance. API credentials are intentionally never stored."""
+    __tablename__ = "advice_reports"
+    __table_args__ = (Index("idx_advice_family_date", "family_id", "report_date"),)
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    family_id: Mapped[str] = mapped_column(String(64), ForeignKey("families.id"), index=True)
+    requested_by_user_id: Mapped[str] = mapped_column(String(64), ForeignKey("users.id"))
+    report_date: Mapped[str] = mapped_column(String(10), index=True)
+    provider: Mapped[str] = mapped_column(String(64), default="openai-compatible")
+    model: Mapped[str] = mapped_column(String(128))
+    content: Mapped[str] = mapped_column(Text)
+    stats_snapshot: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
 
 class FeedbackEvent(Base):
