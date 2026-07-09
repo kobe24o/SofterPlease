@@ -27,6 +27,26 @@ def test_sensevoice_is_default_backend(monkeypatch):
     assert analyzer.backend == "sensevoice"
 
 
+def test_sensevoice_load_uses_packaged_funasr_model(monkeypatch):
+    calls = []
+
+    class FakeAutoModel:
+        def __init__(self, **kwargs):
+            calls.append(kwargs)
+
+    monkeypatch.setattr(
+        "app.emotion_engine.emotion_analyzer.get_auto_model_class",
+        lambda: FakeAutoModel,
+    )
+
+    analyzer = EmotionAnalyzer(device="cpu")
+
+    assert analyzer._ensure_sensevoice_model() is True
+    assert calls
+    assert calls[0]["model"] == analyzer.sensevoice_model_id
+    assert calls[0]["trust_remote_code"] is False
+
+
 def test_neutral_sensevoice_uses_direct_model_output():
     analyzer = make_analyzer("<|zh|><|NEUTRAL|><|Speech|>我真的生气了，别再说了！")
     features = {

@@ -49,6 +49,24 @@ def test_auto_speaker_matching_merges_clear_moderate_match():
     assert 0.55 < match.confidence < 0.60
 
 
+def test_auto_speaker_matching_merges_single_lower_confidence_match():
+    service = ConversationService()
+    target = np.array([0.48, 0.8772685, 0.0], dtype=np.float32)
+    profiles = {
+        "spk_parent": np.array([1.0, 0.0, 0.0], dtype=np.float32),
+    }
+
+    match = service.match_speaker_profile(
+        target,
+        profiles,
+        auto_profile_ids={"spk_parent"},
+    )
+
+    assert match is not None
+    assert match.speaker_id == "spk_parent"
+    assert 0.46 < match.confidence < 0.50
+
+
 def test_auto_speaker_matching_rejects_ambiguous_moderate_match():
     service = ConversationService()
     target = np.array([0.72, 0.694, 0.0], dtype=np.float32)

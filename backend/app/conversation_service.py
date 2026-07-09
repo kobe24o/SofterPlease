@@ -34,7 +34,7 @@ class SpeakerMatch:
 
 class ConversationService:
     REGISTERED_PROFILE_THRESHOLD = 0.60
-    AUTO_PROFILE_THRESHOLD = 0.52
+    AUTO_PROFILE_THRESHOLD = 0.46
     AUTO_PROFILE_MARGIN = 0.08
 
     def __init__(self, max_segment_seconds: float = MAX_DIARIZATION_SEGMENT_SECONDS) -> None:

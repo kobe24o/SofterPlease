@@ -111,6 +111,10 @@ class FamilyMemberAddRequest(BaseModel):
     display_name: Optional[str] = None
 
 
+class LocalFamilyMemberCreateRequest(BaseModel):
+    display_name: str = Field(min_length=1, max_length=64)
+
+
 class JoinFamilyRequest(BaseModel):
     invite_code: str = Field(min_length=1)
 
@@ -199,6 +203,11 @@ class ModelVersionLoadRequest(BaseModel):
 
 class SpeakerConfirmRequest(BaseModel):
     user_id: str = Field(min_length=1)
+
+
+class SegmentSpeakerAssignRequest(BaseModel):
+    user_id: str = Field(min_length=1)
+    learn_voice: bool = False
 
 
 class SpeakerRenameRequest(BaseModel):
@@ -1150,6 +1159,35 @@ def add_member(
     return {"status": "added"}
 
 
+@app.post("/v1/families/{family_id}/local-members")
+def add_local_member(
+    family_id: str,
+    payload: LocalFamilyMemberCreateRequest,
+    db: Session = Depends(get_db),
+    user_id: str = Depends(get_current_user_id),
+) -> dict[str, str]:
+    family = db.get(Family, family_id)
+    if not family:
+        raise HTTPException(status_code=404, detail="family not found")
+    ensure_family_member(db, family_id, user_id)
+
+    display_name = payload.display_name.strip()
+    if not display_name:
+        raise HTTPException(status_code=400, detail="display name cannot be empty")
+
+    member_user_id = f"local_{uuid.uuid4().hex[:12]}"
+    user = User(id=member_user_id, nickname=display_name)
+    db.add(user)
+    db.add(FamilyMember(
+        family_id=family_id,
+        user_id=member_user_id,
+        role="member",
+        display_name=display_name,
+    ))
+    db.commit()
+    return {"status": "added", "user_id": member_user_id, "display_name": display_name}
+
+
 @app.get("/v1/families/{family_id}/stats", response_model=FamilyStatsResponse)
 def get_family_stats(
     family_id: str,
@@ -1840,6 +1878,43 @@ def confirm_segment_speaker(
     }
 
 
+@app.patch("/v1/conversation-segments/{segment_id}/speaker")
+def assign_segment_speaker(
+    segment_id: str,
+    payload: SegmentSpeakerAssignRequest,
+    db: Session = Depends(get_db),
+    user_id: str = Depends(get_current_user_id),
+) -> dict[str, Any]:
+    segment = db.get(ConversationSegment, segment_id)
+    if not segment:
+        raise HTTPException(status_code=404, detail="segment not found")
+    ensure_family_member(db, segment.family_id, user_id)
+    ensure_family_member(db, segment.family_id, payload.user_id)
+
+    segment.corrected_speaker_id = payload.user_id
+    segment.predicted_speaker_id = payload.user_id
+    segment.role_confirmed = True
+    segment.assignment_source = "human"
+    if segment.emotion_event_id:
+        event = db.get(EmotionEvent, segment.emotion_event_id)
+        if event:
+            event.speaker_id = payload.user_id
+            event.speaker_confidence = segment.speaker_confidence
+
+    db.commit()
+
+    if payload.learn_voice:
+        return confirm_segment_speaker(
+            segment_id,
+            SpeakerConfirmRequest(user_id=payload.user_id),
+            db,
+            user_id,
+        )
+
+    names = family_member_names(db, segment.family_id)
+    return {"segment": serialize_segment(segment, names)}
+
+
 @app.patch("/v1/families/{family_id}/speakers/{speaker_id}")
 def rename_speaker(
     family_id: str,
@@ -1910,6 +1985,63 @@ def rename_speaker(
         "speaker_id": identity.id,
         "display_name": identity.display_name,
         "updated_count": updated_count,
+    }
+
+
+@app.delete("/v1/families/{family_id}/speaker-data")
+def clear_speaker_data(
+    family_id: str,
+    scope: str = Query(default="voice", pattern="^(voice|all)$"),
+    db: Session = Depends(get_db),
+    user_id: str = Depends(get_current_user_id),
+) -> dict[str, Any]:
+    ensure_family_member(db, family_id, user_id)
+
+    deleted_voice_profiles = db.query(VoiceProfile).filter(
+        VoiceProfile.family_id == family_id,
+    ).delete(synchronize_session=False)
+    deleted_speaker_identities = db.query(SpeakerIdentity).filter(
+        SpeakerIdentity.family_id == family_id,
+    ).delete(synchronize_session=False)
+    cleared_segments = 0
+    cleared_events = 0
+
+    if scope == "all":
+        segments = db.execute(
+            select(ConversationSegment).where(ConversationSegment.family_id == family_id)
+        ).scalars().all()
+        for segment in segments:
+            segment.predicted_speaker_id = None
+            segment.corrected_speaker_id = None
+            segment.speaker_confidence = 0.0
+            segment.role_confirmed = False
+            segment.assignment_source = "cleared"
+            cleared_segments += 1
+
+        events = db.execute(
+            select(EmotionEvent).where(EmotionEvent.family_id == family_id)
+        ).scalars().all()
+        for event in events:
+            event.speaker_id = "unknown"
+            event.speaker_confidence = 0.0
+            cleared_events += 1
+
+        feedback_events = db.execute(
+            select(FeedbackEvent)
+            .join(SessionModel, SessionModel.id == FeedbackEvent.session_id)
+            .where(SessionModel.family_id == family_id)
+        ).scalars().all()
+        for feedback_event in feedback_events:
+            feedback_event.speaker_id = "unknown"
+
+    db.commit()
+    return {
+        "status": "cleared",
+        "scope": scope,
+        "deleted_voice_profiles": deleted_voice_profiles,
+        "deleted_speaker_identities": deleted_speaker_identities,
+        "cleared_segments": cleared_segments,
+        "cleared_events": cleared_events,
     }
 
 

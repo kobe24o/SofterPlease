@@ -19,6 +19,7 @@ import librosa
 import torch
 import torch.nn as nn
 
+from ..funasr_compat import get_auto_model_class
 
 logger = logging.getLogger(__name__)
 
@@ -255,7 +256,7 @@ class VoiceRecognizer:
             if self._speaker_model is not None:
                 return True
             try:
-                from funasr import AutoModel
+                AutoModel = get_auto_model_class()
 
                 device = "cuda:0" if torch.cuda.is_available() else "cpu"
                 self._speaker_model = AutoModel(

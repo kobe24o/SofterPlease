@@ -13,3 +13,4 @@ backend/debug_audio/
 backend/training_workspace/
 logs/
 .playwright-cli/
+.codex-run/

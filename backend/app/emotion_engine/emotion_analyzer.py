@@ -25,6 +25,7 @@ import torch.nn as nn
 from .text_emotion_model import TextEmotionModel
 from .multimodal_emotion_model import MultimodalEmotionModel
 from .tri_class_emotion_model import TriClassEmotionModel
+from ..funasr_compat import get_auto_model_class
 
 # 配置日志
 logger = logging.getLogger(__name__)
@@ -315,7 +316,7 @@ class EmotionAnalyzer:
         self._emotion2vec_load_attempted = True
         self._emotion2vec_load_error = None
         try:
-            from funasr import AutoModel
+            AutoModel = get_auto_model_class()
 
             device = "cuda:0" if self.device.type == "cuda" and torch.cuda.is_available() else "cpu"
             self._emotion2vec_model = AutoModel(
@@ -342,12 +343,12 @@ class EmotionAnalyzer:
         self._sensevoice_load_attempted = True
         self._sensevoice_load_error = None
         try:
-            from funasr import AutoModel
+            AutoModel = get_auto_model_class()
 
             device = "cuda:0" if self.device.type == "cuda" and torch.cuda.is_available() else "cpu"
             self._sensevoice_model = AutoModel(
                 model=self.sensevoice_model_id,
-                trust_remote_code=True,
+                trust_remote_code=False,
                 device=device,
                 disable_update=True,
             )
