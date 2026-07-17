@@ -1,0 +1,501 @@
+<!DOCTYPE html>
+        <html>
+        <head>
+            <meta charset="UTF-8">
+            <title>SofterPlease&colon; &#x8ba9;&#x5bb6;&#x5ead;&#x6c9f;&#x901a;&#x88ab;&#x6e29;&#x67d4;&#x5730;&#x770b;&#x89c1;</title>
+            <style>
+/* From extension vscode.github */
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
+.vscode-dark img[src$=\#gh-light-mode-only],
+.vscode-light img[src$=\#gh-dark-mode-only],
+.vscode-high-contrast:not(.vscode-high-contrast-light) img[src$=\#gh-light-mode-only],
+.vscode-high-contrast-light img[src$=\#gh-dark-mode-only] {
+	display: none;
+}
+
+</style>
+            
+        <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/Microsoft/vscode/extensions/markdown-language-features/media/markdown.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/Microsoft/vscode/extensions/markdown-language-features/media/highlight.css">
+<style>
+            body {
+                font-family: -apple-system, BlinkMacSystemFont, 'Segoe WPC', 'Segoe UI', system-ui, 'Ubuntu', 'Droid Sans', sans-serif;
+                font-size: 14px;
+                line-height: 1.6;
+            }
+        </style>
+        <style>
+.task-list-item {
+    list-style-type: none;
+}
+
+.task-list-item-checkbox {
+    margin-left: -20px;
+    vertical-align: middle;
+    pointer-events: none;
+}
+</style>
+<style>
+:root {
+  --color-note: #0969da;
+  --color-tip: #1a7f37;
+  --color-warning: #9a6700;
+  --color-severe: #bc4c00;
+  --color-caution: #d1242f;
+  --color-important: #8250df;
+}
+
+</style>
+<style>
+@media (prefers-color-scheme: dark) {
+  :root {
+    --color-note: #2f81f7;
+    --color-tip: #3fb950;
+    --color-warning: #d29922;
+    --color-severe: #db6d28;
+    --color-caution: #f85149;
+    --color-important: #a371f7;
+  }
+}
+
+</style>
+<style>
+.markdown-alert {
+  padding: 0.5rem 1rem;
+  margin-bottom: 16px;
+  color: inherit;
+  border-left: .25em solid #888;
+}
+
+.markdown-alert>:first-child {
+  margin-top: 0
+}
+
+.markdown-alert>:last-child {
+  margin-bottom: 0
+}
+
+.markdown-alert .markdown-alert-title {
+  display: flex;
+  font-weight: 500;
+  align-items: center;
+  line-height: 1
+}
+
+.markdown-alert .markdown-alert-title .octicon {
+  margin-right: 0.5rem;
+  display: inline-block;
+  overflow: visible !important;
+  vertical-align: text-bottom;
+  fill: currentColor;
+}
+
+.markdown-alert.markdown-alert-note {
+  border-left-color: var(--color-note);
+}
+
+.markdown-alert.markdown-alert-note .markdown-alert-title {
+  color: var(--color-note);
+}
+
+.markdown-alert.markdown-alert-important {
+  border-left-color: var(--color-important);
+}
+
+.markdown-alert.markdown-alert-important .markdown-alert-title {
+  color: var(--color-important);
+}
+
+.markdown-alert.markdown-alert-warning {
+  border-left-color: var(--color-warning);
+}
+
+.markdown-alert.markdown-alert-warning .markdown-alert-title {
+  color: var(--color-warning);
+}
+
+.markdown-alert.markdown-alert-tip {
+  border-left-color: var(--color-tip);
+}
+
+.markdown-alert.markdown-alert-tip .markdown-alert-title {
+  color: var(--color-tip);
+}
+
+.markdown-alert.markdown-alert-caution {
+  border-left-color: var(--color-caution);
+}
+
+.markdown-alert.markdown-alert-caution .markdown-alert-title {
+  color: var(--color-caution);
+}
+
+</style>
+        
+        </head>
+        <body class="vscode-body vscode-light">
+            <span id="markdown-mermaid" aria-hidden="true" data-config="{&quot;darkModeTheme&quot;:&quot;vscode&quot;,&quot;lightModeTheme&quot;:&quot;vscode&quot;,&quot;maxTextSize&quot;:50000,&quot;clickDrag&quot;:&quot;alt&quot;,&quot;showControls&quot;:&quot;onHoverOrFocus&quot;,&quot;resizable&quot;:true,&quot;maxHeight&quot;:&quot;&quot;}"></span>
+				<h1 id="softerplease-让家庭沟通被温柔地看见">SofterPlease: 让家庭沟通被温柔地看见</h1>
+<blockquote>
+<p>一次录音，拆成可回放的句子；一段对话，沉淀成可行动的建议。<br>
+SofterPlease 想做的不是评判谁对谁错，而是帮助家庭把真实沟通看清楚。</p>
+</blockquote>
+<h2 id="01-为什么做这个产品">01. 为什么做这个产品</h2>
+<p>很多家庭冲突并不是从“大问题”开始的。</p>
+<p>它可能只是下班后的一句“快点写作业”，也可能是孩子顶嘴后的几秒沉默。真正让人难受的，往往不是某一句话本身，而是我们在情绪上来时没有意识到：语气已经变硬，节奏已经变快，对话已经从沟通变成了对抗。</p>
+<p>SofterPlease 的设计理念很简单：</p>
+<p><strong>不要让 AI 站在家人中间做裁判，而是让 AI 站在旁边，帮我们复盘和修正。</strong></p>
+<p>它面向的不是医疗诊断，也不是心理标签，而是日常家庭沟通中的三个具体问题：</p>
+<ol>
+<li>当时发生了什么：谁在什么时间说了什么。</li>
+<li>情绪如何变化：哪些片段开始紧张，哪些片段是正向回应。</li>
+<li>下一次怎么做得更好：给出温和、具体、可执行的沟通建议。</li>
+</ol>
+<p>这就是 SofterPlease 的产品核心：<strong>把一次容易被情绪淹没的对话，变成可以被理解、回放、修正和成长的数据。</strong></p>
+<h2 id="02-产品体验-从录音到建议">02. 产品体验: 从录音到建议</h2>
+<p>用户侧的使用路径被刻意设计得很轻：</p>
+<ol>
+<li>创建家庭，进入录音页。</li>
+<li>按下长录音按钮，记录真实对话。</li>
+<li>后端自动切句、识别文本、判断情绪、区分说话人。</li>
+<li>用户可以逐句回放，也可以修正说话人。</li>
+<li>统计页展示每个角色的趋势。</li>
+<li>大模型基于当天数据生成家庭沟通建议。</li>
+</ol>
+<pre class="mermaid" style="all: unset;">flowchart LR
+  A["真实家庭对话"] --&gt; B["手机端长录音"]
+  B --&gt; C["后端自动切句"]
+  C --&gt; D["文本与情绪识别"]
+  C --&gt; E["声纹与说话人归属"]
+  D --&gt; F["逐句记录"]
+  E --&gt; F
+  F --&gt; G["趋势统计"]
+  G --&gt; H["AI 沟通建议"]
+  H --&gt; I["下一次更温和的表达"]</pre>
+<p>这里最重要的产品取舍是：<strong>不要求用户在录音前做复杂标注，也不要求用户在录音后手动整理。</strong></p>
+<p>家庭沟通本来就发生在真实生活里。产品如果需要用户每句话都手动上传、剪辑、分类，那就失去了被长期使用的可能。SofterPlease 的技术架构围绕这一点展开：长录音自动处理、逐句可追溯、识别结果可纠正、系统持续学习。</p>
+<h2 id="03-系统架构-轻客户端--可解释-ai-后端">03. 系统架构: 轻客户端 + 可解释 AI 后端</h2>
+<p>SofterPlease 采用 Flutter 移动端 + FastAPI 后端的结构。移动端负责录音、展示、回放、用户确认；后端负责音频处理、模型推理、说话人管理、统计聚合和大模型建议生成。</p>
+<pre class="mermaid" style="all: unset;">flowchart TB
+  subgraph Client["Flutter 移动端"]
+    C1["家庭与成员"]
+    C2["长录音采集"]
+    C3["逐句回放与说话人确认"]
+    C4["统计页与建议页"]
+  end
+
+  subgraph API["FastAPI 后端"]
+    A1["会话 API"]
+    A2["长录音分析 API"]
+    A3["说话人管理 API"]
+    A4["统计与建议 API"]
+  end
+
+  subgraph AI["AI 推理层"]
+    M1["VAD 切句"]
+    M2["SenseVoice 文本/情绪"]
+    M3["CAM++ 声纹 embedding"]
+    M4["聚类与声纹档案"]
+    M5["OpenAI 兼容大模型建议"]
+  end
+
+  subgraph Data["数据层"]
+    D1["Session"]
+    D2["ConversationSegment"]
+    D3["SpeakerIdentity"]
+    D4["EmotionEvent"]
+    D5["AdviceReport"]
+  end
+
+  Client --&gt; API
+  API --&gt; AI
+  API --&gt; Data
+  AI --&gt; Data
+  Data --&gt; Client</pre>
+<p>这套架构有三个特点：</p>
+<p><strong>第一，原始交互尽量简单。</strong><br>
+手机端只需要完成录音和展示，把复杂的音频切分、模型加载、说话人归属都放到后端。</p>
+<p><strong>第二，每个识别结果都可追溯。</strong><br>
+系统不是只给一个“今天情绪不好”的结论，而是保存每句话的起止时间、音频片段、识别文本、情绪值、模型后端、置信度、说话人归属和人工修正状态。</p>
+<p><strong>第三，大模型只做建议，不做事实判断。</strong><br>
+事实层来自结构化数据和逐句记录，大模型负责把这些事实组织成更容易执行的沟通建议，避免把“生成能力”误用成“诊断能力”。</p>
+<h2 id="04-核心数据模型-一句话就是一个最小证据单元">04. 核心数据模型: 一句话就是一个最小证据单元</h2>
+<p>SofterPlease 的关键不是“录了一整段音频”，而是把长音频拆成一个个可验证的句子。</p>
+<p>核心数据对象可以理解为：</p>
+<table>
+<thead>
+<tr>
+<th>数据对象</th>
+<th>作用</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>Session</code></td>
+<td>一次连续沟通记录，保存家庭、设备、开始结束时间和整体统计</td>
+</tr>
+<tr>
+<td><code>ConversationSegment</code></td>
+<td>VAD 切出来的一句话，保存文本、情绪、声纹、说话人和音频路径</td>
+</tr>
+<tr>
+<td><code>SpeakerIdentity</code></td>
+<td>家庭内的说话人档案，保存显示名、声纹中心向量和样本数量</td>
+</tr>
+<tr>
+<td><code>EmotionEvent</code></td>
+<td>情绪事件，用于统计、趋势和反馈</td>
+</tr>
+<tr>
+<td><code>AdviceReport</code></td>
+<td>大模型生成的建议报告，保存当时的数据快照和建议内容</td>
+</tr>
+</tbody>
+</table>
+<pre class="mermaid" style="all: unset;">erDiagram
+  Session ||--o{ ConversationSegment : contains
+  ConversationSegment ||--o| EmotionEvent : creates
+  SpeakerIdentity ||--o{ ConversationSegment : resolves
+  Session }o--|| Family : belongs_to
+  Family ||--o{ SpeakerIdentity : learns
+  Family ||--o{ AdviceReport : receives</pre>
+<p>这种设计让产品天然具备“复盘能力”：</p>
+<ul>
+<li>用户可以回到某一句，听原音频。</li>
+<li>用户可以看到这句话为什么被判为正向、中性或负向。</li>
+<li>用户可以修正说话人，让系统下次更准。</li>
+<li>建议报告可以引用当天真实片段，而不是泛泛而谈。</li>
+</ul>
+<h2 id="05-算法链路-从长录音到家庭建议">05. 算法链路: 从长录音到家庭建议</h2>
+<p>SofterPlease 的算法实现可以拆成五层。</p>
+<pre class="mermaid" style="all: unset;">flowchart TD
+  A["输入: 0-10 分钟家庭录音"] --&gt; B["音频标准化: mono / 16kHz"]
+  B --&gt; C["VAD 切句: 静音检测 + 合并相邻语音"]
+  C --&gt; D["单句长度控制: 情绪模型片段上限约 25 秒"]
+  D --&gt; E["SenseVoice: ASR + 情绪标签"]
+  D --&gt; F["CAM++: 192 维说话人 embedding"]
+  F --&gt; G["余弦相似度 + 层次聚类"]
+  G --&gt; H["匹配家庭声纹档案"]
+  E --&gt; I["情绪三分类与多维指标"]
+  H --&gt; J["ConversationSegment 入库"]
+  I --&gt; J
+  J --&gt; K["按人/天聚合统计"]
+  K --&gt; L["大模型生成行动建议"]</pre>
+<h3 id="51-vad-先把长录音切成可理解的句子">5.1 VAD: 先把长录音切成可理解的句子</h3>
+<p>家庭真实录音最大的问题是：它不是干净的单句语音，而是有停顿、有噪声、有插话、有沉默的长音频。</p>
+<p>SofterPlease 使用基于能量的语音活动检测，把音频切成语音片段，并做三件事：</p>
+<ol>
+<li>对短停顿进行合并，避免一句话被切得过碎。</li>
+<li>对片段前后加少量 padding，避免切掉开头和尾音。</li>
+<li>控制单段最长时间，避免超过模型适合处理的窗口。</li>
+</ol>
+<p>当前后端的设计里：</p>
+<ul>
+<li>长录音上限约 10 分钟。</li>
+<li>说话人 diarization 窗口控制在约 8 秒。</li>
+<li>情绪模型单句片段上限约 25 秒。</li>
+</ul>
+<p>这是一种务实的工程取舍：宁可把一次长录音拆成可复核的小片段，也不要让模型对一整段混乱音频给一个不可解释的总分。</p>
+<h3 id="52-sensevoice-同时拿到文本和情绪线索">5.2 SenseVoice: 同时拿到文本和情绪线索</h3>
+<p>在每个语音片段上，SofterPlease 默认使用 SenseVoiceSmall 作为文本与情绪识别后端。</p>
+<p>SenseVoice 的价值在于它不仅能输出转写文本，还能返回类似 <code>HAPPY</code>、<code>SAD</code>、<code>ANGRY</code>、<code>NEUTRAL</code> 的情绪标签。系统会把这些标签映射成更适合产品使用的三类结果：</p>
+<table>
+<thead>
+<tr>
+<th>模型标签</th>
+<th style="text-align:right">产品情绪值</th>
+<th>产品含义</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>HAPPY</code></td>
+<td style="text-align:right"><code>+1</code></td>
+<td>正向、鼓励、肯定</td>
+</tr>
+<tr>
+<td><code>NEUTRAL</code></td>
+<td style="text-align:right"><code>0</code></td>
+<td>中性、信息表达</td>
+</tr>
+<tr>
+<td><code>SAD</code> / <code>ANGRY</code></td>
+<td style="text-align:right"><code>-1</code></td>
+<td>负向、紧张、压力或冲突</td>
+</tr>
+</tbody>
+</table>
+<p>同时，系统还保留了更细的多维指标：</p>
+<ul>
+<li><code>valence</code>: 情感效价，偏正向还是负向。</li>
+<li><code>arousal</code>: 唤醒度，语气是否激动。</li>
+<li><code>stress</code>: 压力指数。</li>
+<li><code>impatience</code>: 不耐烦指数。</li>
+<li><code>confidence</code>: 模型置信度。</li>
+</ul>
+<p>产品上看起来只是“中性 / 正向 / 负向”，但底层保留多维信息，是为了后续做更细的趋势判断和个性化建议。</p>
+<h3 id="53-cam-让谁说的变得可学习">5.3 CAM++: 让“谁说的”变得可学习</h3>
+<p>家庭对话分析不能只知道“有人说了什么”，还要知道“是谁说的”。</p>
+<p>SofterPlease 使用 CAM++ 提取说话人声纹 embedding。每个语音片段会得到一个向量，系统再做两层处理：</p>
+<ol>
+<li>
+<p><strong>本次录音内聚类</strong><br>
+使用余弦距离和层次聚类，把同一段录音里相似的声音聚到一起，形成 <code>speaker_1</code>、<code>speaker_2</code> 这类临时说话人。</p>
+</li>
+<li>
+<p><strong>匹配家庭声纹档案</strong><br>
+如果用户曾经确认过“这句话是爸爸/妈妈/孩子说的”，系统会把该片段的 embedding 融入家庭声纹档案。后续新录音会先与已知档案做相似度匹配，达到阈值后自动归属。</p>
+</li>
+</ol>
+<pre class="mermaid" style="all: unset;">flowchart LR
+  A["单句音频"] --&gt; B["CAM++ embedding"]
+  B --&gt; C["L2 归一化"]
+  C --&gt; D["与家庭声纹档案计算余弦相似度"]
+  D --&gt; E{"超过阈值?"}
+  E --&gt;|是| F["归属到已知家庭成员"]
+  E --&gt;|否| G["进入本次录音聚类"]
+  G --&gt; H["生成临时 speaker_id"]
+  H --&gt; I["用户确认后更新声纹中心"]
+  I --&gt; D</pre>
+<p>这一步让 SofterPlease 具备“越用越贴近家庭”的能力。它不是一次性要求用户完成声纹注册，而是在真实使用中逐步学习。</p>
+<h3 id="54-人工确认-让-ai-有机会变好">5.4 人工确认: 让 AI 有机会变好</h3>
+<p>很多 AI 产品的问题是：模型错了，用户只能忍。</p>
+<p>SofterPlease 选择了另一条路：<strong>允许模型犯错，但必须让用户能修正。</strong></p>
+<p>每个 <code>ConversationSegment</code> 都有：</p>
+<ul>
+<li>预测说话人。</li>
+<li>置信度。</li>
+<li>是否人工确认。</li>
+<li>修正后的说话人。</li>
+<li>归属来源。</li>
+</ul>
+<p>当用户确认某一句的说话人后，系统会更新对应家庭成员的声纹中心向量。更新方式不是简单覆盖，而是把新样本和旧中心做加权融合，让声纹档案逐步稳定。</p>
+<p>这也是产品信任感的来源：用户不是被 AI 管理，而是在训练一个只属于自己家庭的沟通助手。</p>
+<h3 id="55-大模型建议-只基于事实不制造诊断">5.5 大模型建议: 只基于事实，不制造诊断</h3>
+<p>当一天的数据被聚合后，SofterPlease 会构造结构化快照：</p>
+<ul>
+<li>每个说话人的发言数量。</li>
+<li>正向、中性、负向分布。</li>
+<li>当天代表性对话片段。</li>
+<li>最近趋势。</li>
+<li>用户确认过的说话人名称。</li>
+</ul>
+<p>然后通过 OpenAI 兼容接口请求大模型生成建议。提示词约束非常明确：</p>
+<ul>
+<li>必须区分事实和推测。</li>
+<li>不做医学或心理疾病诊断。</li>
+<li>必须给每个 <code>speaker_id</code> 分别输出建议。</li>
+<li>建议要可执行，而不是空泛鸡汤。</li>
+</ul>
+<p>所以产品最后呈现的不是“你们家关系不好”，而是类似：</p>
+<ul>
+<li>今天爸爸多次催促作业，语气偏急；可以先确认孩子卡在哪里，再给出一个明确的下一步。</li>
+<li>妈妈有几次正向反馈，建议保留这种具体表扬。</li>
+<li>孩子的回应偏短，可能需要更多选择题式提问，而不是连续追问。</li>
+</ul>
+<p>这就是 SofterPlease 的边界：<strong>AI 不替家庭下结论，只帮助家庭看到事实，并给出下一次可以尝试的表达。</strong></p>
+<h2 id="06-工程实现-为什么它不是一个简单-demo">06. 工程实现: 为什么它不是一个简单 Demo</h2>
+<p>一个真正可用的家庭沟通助手，难点不在“调用一个模型”，而在一整条链路能不能闭环。</p>
+<p>SofterPlease 的工程闭环包括：</p>
+<table>
+<thead>
+<tr>
+<th>环节</th>
+<th>工程挑战</th>
+<th>SofterPlease 的处理</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>长录音</td>
+<td>音频长、静音多、噪声多</td>
+<td>VAD 切句，合并短停顿，控制单段长度</td>
+</tr>
+<tr>
+<td>情绪识别</td>
+<td>日常对话大多不是强情绪</td>
+<td>模型标签 + 声学特征 + 可选校准器</td>
+</tr>
+<tr>
+<td>说话人识别</td>
+<td>家庭成员声音相近，样本少</td>
+<td>CAM++ embedding + 聚类 + 用户确认学习</td>
+</tr>
+<tr>
+<td>可解释性</td>
+<td>不能只给一个分数</td>
+<td>保存逐句音频、文本、时间、模型结果</td>
+</tr>
+<tr>
+<td>建议生成</td>
+<td>大模型容易泛化和编造</td>
+<td>结构化快照 + 事实/推测边界 + 不诊断约束</td>
+</tr>
+<tr>
+<td>隐私信任</td>
+<td>家庭语音高度敏感</td>
+<td>API key 不在服务端持久化，建议基于用户临时配置调用</td>
+</tr>
+</tbody>
+</table>
+<p>特别是“逐句保存”这个设计，看起来增加了数据量，却换来了三个关键能力：</p>
+<ol>
+<li>用户可以检查模型有没有错。</li>
+<li>用户可以训练系统认识家庭成员。</li>
+<li>后续建议有真实证据支撑。</li>
+</ol>
+<p>对于家庭沟通这种敏感场景，可信度比炫技更重要。</p>
+<h2 id="07-可扩展方向">07. 可扩展方向</h2>
+<p>SofterPlease 当前已经跑通了从录音到建议的核心链路。后续可以继续扩展几个方向：</p>
+<h3 id="方向一-更细的家庭沟通事件识别">方向一: 更细的家庭沟通事件识别</h3>
+<p>不只识别单句情绪，还可以识别对话结构：</p>
+<ul>
+<li>打断。</li>
+<li>反复催促。</li>
+<li>正向回应。</li>
+<li>命令式表达。</li>
+<li>具体表扬。</li>
+<li>沉默后的重新连接。</li>
+</ul>
+<p>这样建议会更像“沟通教练”，而不只是“情绪统计”。</p>
+<h3 id="方向二-个性化校准">方向二: 个性化校准</h3>
+<p>每个家庭的说话风格不同。有些人天生语速快，有些人音量大，有些家庭表达本来就直接。</p>
+<p>因此 SofterPlease 的长期方向不是做一个放之四海皆准的情绪模型，而是做“家庭内校准”：</p>
+<ul>
+<li>以家庭自己的历史数据作为基线。</li>
+<li>以用户确认作为反馈信号。</li>
+<li>区分“这个人平时就这样说话”和“今天明显更紧张”。</li>
+</ul>
+<h3 id="方向三-隐私优先的本地化推理">方向三: 隐私优先的本地化推理</h3>
+<p>家庭语音是非常敏感的数据。未来可以进一步把更多推理放到端侧或家庭本地服务器：</p>
+<ul>
+<li>端侧 VAD。</li>
+<li>端侧声纹归属。</li>
+<li>本地情绪校准器。</li>
+<li>云端只接收结构化摘要。</li>
+</ul>
+<p>这会让产品更适合长期陪伴型场景。</p>
+<h2 id="08-一句话总结">08. 一句话总结</h2>
+<p>SofterPlease 不是想让 AI 变成家庭里的裁判。</p>
+<p>它更像一面温和的镜子：<br>
+把一次真实对话拆开，标出时间、角色、情绪和趋势，再用尽量克制的方式提醒我们：</p>
+<p><strong>下一次，也许可以说得更温柔一点。</strong></p>
+<p>如果你也相信技术不只应该提高效率，也可以帮助人和人更好地相处，欢迎关注 SofterPlease。<br>
+也欢迎提出宝贵建议，一起把家庭沟通这件小事，做得更认真、更温柔。</p>
+<h2 id="附-适合传播的短标题">附: 适合传播的短标题</h2>
+<ol>
+<li>我做了一个 AI 家庭沟通助手，让每次争吵都有机会被复盘</li>
+<li>不做裁判，只做镜子: 一个家庭语音 AI 助手的设计与实现</li>
+<li>从长录音到沟通建议: SofterPlease 的产品架构和算法方案</li>
+<li>AI 能不能让家人好好说话？我做了一个真实产品实验</li>
+<li>用 SenseVoice + CAM++ 做一个家庭沟通助手</li>
+</ol>
+
+            
+            
+        </body>
+        </html>
