@@ -66,8 +66,13 @@ class AppUpdateChannel(private val activity: MainActivity) {
         val flags = if (Build.VERSION.SDK_INT >= 28) PackageManager.GET_SIGNING_CERTIFICATES else PackageManager.GET_SIGNATURES
         val info = activity.packageManager.getPackageArchiveInfo(file.path, flags)
             ?: throw IllegalArgumentException("Unable to inspect update APK")
-        val certificate = if (Build.VERSION.SDK_INT >= 28) info.signingInfo?.apkContentsSigners?.singleOrNull() else info.signatures?.singleOrNull()
-            ?: throw IllegalArgumentException("Update APK has no single signing certificate")
+        val certificate = (
+            if (Build.VERSION.SDK_INT >= 28) {
+                info.signingInfo?.apkContentsSigners?.singleOrNull()
+            } else {
+                info.signatures?.singleOrNull()
+            }
+        ) ?: throw IllegalArgumentException("Update APK has no single signing certificate")
         return mapOf(
             "packageName" to info.packageName,
             "versionCode" to versionCode(info),
