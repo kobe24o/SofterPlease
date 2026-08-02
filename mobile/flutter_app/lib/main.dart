@@ -7,12 +7,32 @@ import 'package:flutter/material.dart';
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 import 'package:record/record.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+
+import 'local/local_session_store.dart';
+import 'update/android_update_bridge.dart';
+import 'update/update_manifest.dart';
+import 'update/update_service.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
   runApp(const SofterPleaseApp());
+}
+
+final class _SharedPreferencesStorage implements LocalStringStorage {
+  const _SharedPreferencesStorage(this._preferences);
+
+  final SharedPreferences _preferences;
+
+  @override
+  Future<String?> read(String key) async => _preferences.getString(key);
+
+  @override
+  Future<void> write(String key, String value) async {
+    await _preferences.setString(key, value);
+  }
 }
 
 class SofterPleaseApp extends StatelessWidget {
@@ -76,10 +96,12 @@ class _MonitorPageState extends State<MonitorPage> {
   String? _recordPath;
   bool _isLoading = true;
   bool _isRecording = false;
+  bool _isLocalOnlySession = false;
   bool _isAnalyzing = false;
   bool _isModelLoading = false;
   bool _isGeneratingAdvice = false;
   bool _isTestingLlm = false;
+  bool _isCheckingUpdate = false;
   bool _obscureApiKey = true;
   int _recordingSeconds = 0;
   int _maxRecordingSeconds = 600;
@@ -97,6 +119,7 @@ class _MonitorPageState extends State<MonitorPage> {
   List<ConversationSegmentResult> _segments = [];
   List<FamilyRole> _familyRoles = [];
   List<SpeakerStats> _speakerStats = [];
+  List<LocalSessionSummary> _localSessions = [];
 
   bool get _isLoggedIn => _token != null && _familyId != null;
 
@@ -158,6 +181,7 @@ class _MonitorPageState extends State<MonitorPage> {
       await _syncUserFromServer(showError: false);
     }
     await _loadSystemInfo(showError: false);
+    await _loadLocalSessions();
 
     if (mounted) {
       setState(() => _isLoading = false);
@@ -351,6 +375,55 @@ class _MonitorPageState extends State<MonitorPage> {
       if (mounted) setState(() {});
     } catch (error) {
       if (showError) _showSnack('读取模型状态失败：${_formatError(error)}');
+    }
+  }
+
+  Future<void> _checkForUpdate() async {
+    if (_isCheckingUpdate) return;
+    setState(() => _isCheckingUpdate = true);
+    try {
+      final package = await PackageInfo.fromPlatform();
+      final build = int.tryParse(package.buildNumber) ?? 0;
+      final result = await UpdateService().check(currentBuildNumber: build);
+      if (!mounted) return;
+      final manifest = result.manifest;
+      if (manifest == null) {
+        _showSnack(result.error ?? '已经是最新版本');
+        return;
+      }
+      await _showUpdateDialog(manifest);
+    } catch (error) {
+      _showSnack('检查更新失败：${_formatError(error)}');
+    } finally {
+      if (mounted) setState(() => _isCheckingUpdate = false);
+    }
+  }
+
+  Future<void> _showUpdateDialog(UpdateManifest manifest) async {
+    final download = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text('发现新版本 ${manifest.version}'),
+        content: Text(manifest.notes.isEmpty ? '已准备好安全更新。' : manifest.notes),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('稍后')),
+          FilledButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('下载更新')),
+        ],
+      ),
+    );
+    if (download != true || !mounted) return;
+    setState(() => _isCheckingUpdate = true);
+    try {
+      final file = await UpdateService().download(manifest);
+      await AndroidUpdateBridge.install(file, manifest);
+    } catch (error) {
+      _showSnack('安装更新失败：${_formatError(error)}');
+    } finally {
+      if (mounted) setState(() => _isCheckingUpdate = false);
     }
   }
 
@@ -672,7 +745,10 @@ class _MonitorPageState extends State<MonitorPage> {
         'device_id': 'android-${DateTime.now().millisecondsSinceEpoch}',
         'device_type': 'android',
       });
-      setState(() => _sessionId = response.data['session_id'] as String);
+      setState(() {
+        _sessionId = response.data['session_id'] as String;
+        _isLocalOnlySession = false;
+      });
       await _refreshStats(showError: false);
     } catch (error) {
       _showSnack('开始会话失败：${_formatError(error)}');
@@ -683,6 +759,13 @@ class _MonitorPageState extends State<MonitorPage> {
 
   Future<void> _endBackendSession() async {
     if (_sessionId == null) return;
+    if (_isLocalOnlySession) {
+      setState(() {
+        _sessionId = null;
+        _isLocalOnlySession = false;
+      });
+      return;
+    }
     try {
       await _dio.post('/v1/sessions/end', data: {'session_id': _sessionId});
     } catch (_) {
@@ -692,6 +775,7 @@ class _MonitorPageState extends State<MonitorPage> {
       _sessionId = null;
       _latestResult = null;
       _history.clear();
+      _isLocalOnlySession = false;
     });
     await _refreshStats(showError: false);
   }
@@ -723,9 +807,11 @@ class _MonitorPageState extends State<MonitorPage> {
     }
 
     try {
-      final dir = await getTemporaryDirectory();
+      final root = await getApplicationDocumentsDirectory();
+      final dir = Directory('${root.path}${Platform.pathSeparator}recordings');
+      await dir.create(recursive: true);
       final path =
-          '${dir.path}/softerplease_${DateTime.now().millisecondsSinceEpoch}.wav';
+          '${dir.path}${Platform.pathSeparator}softerplease_${DateTime.now().millisecondsSinceEpoch}.wav';
       await _recorder.start(
         const RecordConfig(
           encoder: AudioEncoder.wav,
@@ -787,6 +873,17 @@ class _MonitorPageState extends State<MonitorPage> {
             '本次录音：${audioSeconds.toStringAsFixed(2)} 秒，${(audioBytes / 1024).toStringAsFixed(1)} KB，16kHz mono WAV，${_shortPath(path)}';
       });
 
+      if (_isLocalOnlySession) {
+        await _saveLocalSession(
+          path: path,
+          durationSeconds: audioSeconds.round(),
+        );
+        setState(() {
+          _lastAudioDebug = '录音已仅保存在本机；端侧语音识别接入后将在此离线分析。';
+        });
+        return;
+      }
+
       final formData = FormData.fromMap({
         'audio':
             await MultipartFile.fromFile(path, filename: 'conversation.wav'),
@@ -818,6 +915,52 @@ class _MonitorPageState extends State<MonitorPage> {
       _showSnack('分析失败：${_formatError(error)}');
     } finally {
       if (mounted) setState(() => _isAnalyzing = false);
+    }
+  }
+
+  Future<void> _startLocalSession() async {
+    setState(() {
+      _sessionId = 'local_${DateTime.now().millisecondsSinceEpoch}';
+      _isLocalOnlySession = true;
+      _lastAudioDebug = '离线会话已开始：录音仅保存在本机。';
+    });
+  }
+
+  Future<void> _saveLocalSession({
+    required String path,
+    required int durationSeconds,
+  }) async {
+    final preferences = await SharedPreferences.getInstance();
+    final store = LocalSessionStore(_SharedPreferencesStorage(preferences));
+    await store.save(LocalSessionSummary(
+      id: _sessionId ?? 'local_${DateTime.now().millisecondsSinceEpoch}',
+      createdAt: DateTime.now().toUtc().toIso8601String(),
+      audioPath: path,
+      durationSeconds: durationSeconds,
+      transcript: '',
+      emotionValue: 0,
+    ));
+    await _loadLocalSessions();
+  }
+
+  Future<void> _loadLocalSessions() async {
+    final preferences = await SharedPreferences.getInstance();
+    final store = LocalSessionStore(_SharedPreferencesStorage(preferences));
+    final sessions = await store.loadAll();
+    if (mounted) setState(() => _localSessions = sessions);
+  }
+
+  Future<void> _playLocalSession(LocalSessionSummary session) async {
+    final file = File(session.audioPath);
+    if (!await file.exists()) {
+      _showSnack('本地录音文件已不存在');
+      return;
+    }
+    try {
+      await _audioPlayer.stop();
+      await _audioPlayer.play(DeviceFileSource(file.path));
+    } catch (error) {
+      _showSnack('播放失败：${_formatError(error)}');
     }
   }
 
@@ -998,18 +1141,20 @@ class _MonitorPageState extends State<MonitorPage> {
         ),
         const SizedBox(height: 16),
         _InfoPanel(
-          title: '长录音智能切句',
+          title: _isLocalOnlySession ? '本地录音会话' : '长录音智能切句',
           body:
               '最长 ${(_maxRecordingSeconds / 60).toStringAsFixed(0)} 分钟；系统按停顿自动切句，单句不超过 ${_modelSegmentSeconds.toStringAsFixed(0)} 秒，并区分不同说话人。',
-          actionLabel: _sessionId == null ? '开始会话后录音' : '已准备好',
-          onAction: _sessionId == null ? _startBackendSession : () {},
+          actionLabel: _sessionId == null ? '开始本地会话后录音' : '已准备好',
+          onAction: _sessionId == null
+              ? (_isLoggedIn ? _startBackendSession : _startLocalSession)
+              : () {},
         ),
         const SizedBox(height: 16),
         if (_sessionId == null)
           FilledButton.icon(
-            onPressed: _startBackendSession,
+            onPressed: _isLoggedIn ? _startBackendSession : _startLocalSession,
             icon: const Icon(Icons.play_arrow),
-            label: Text(_isLoggedIn ? '开始会话' : '去我的页面连接服务器'),
+            label: Text(_isLoggedIn ? '开始云端会话' : '开始离线会话'),
           )
         else
           Row(
@@ -1019,7 +1164,9 @@ class _MonitorPageState extends State<MonitorPage> {
                   onPressed: _isAnalyzing ? null : _toggleRecording,
                   icon: Icon(_isRecording ? Icons.stop : Icons.mic),
                   label: Text(_isRecording
-                      ? '停止并分析 ${_formatDuration(_recordingSeconds)}'
+                      ? (_isLocalOnlySession
+                          ? '停止并保存 ${_formatDuration(_recordingSeconds)}'
+                          : '停止并分析 ${_formatDuration(_recordingSeconds)}')
                       : '开始长录音'),
                 ),
               ),
@@ -1062,6 +1209,31 @@ class _MonitorPageState extends State<MonitorPage> {
           Text('最近分析', style: Theme.of(context).textTheme.titleMedium),
         const SizedBox(height: 8),
         for (final item in _history) _HistoryTile(result: item),
+        if (_localSessions.isNotEmpty) ...[
+          const SizedBox(height: 20),
+          Text('本地离线录音',
+              style: Theme.of(context)
+                  .textTheme
+                  .titleMedium
+                  ?.copyWith(fontWeight: FontWeight.w700)),
+          const SizedBox(height: 8),
+          for (final session in _localSessions)
+            Card(
+              child: ListTile(
+                leading: const Icon(Icons.phone_android_outlined),
+                title: Text(session.transcript.isEmpty
+                    ? '等待端侧识别的离线录音'
+                    : session.transcript),
+                subtitle:
+                    Text('${session.durationSeconds} 秒 · ${session.createdAt}'),
+                trailing: IconButton(
+                  tooltip: '播放',
+                  icon: const Icon(Icons.play_arrow),
+                  onPressed: () => _playLocalSession(session),
+                ),
+              ),
+            ),
+        ],
       ],
     );
   }
@@ -1148,6 +1320,34 @@ class _MonitorPageState extends State<MonitorPage> {
                     ),
                   ),
                 ],
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 16),
+        _Panel(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('关于',
+                  style: Theme.of(context)
+                      .textTheme
+                      .titleMedium
+                      ?.copyWith(fontWeight: FontWeight.w700)),
+              const SizedBox(height: 8),
+              const Text('SofterPlease · 家庭情绪语音助手'),
+              const SizedBox(height: 4),
+              const Text('版本信息以当前安装包为准；更新包经签名清单、哈希与 Android 包身份校验后安装。'),
+              const SizedBox(height: 12),
+              FilledButton.icon(
+                onPressed: _isCheckingUpdate ? null : _checkForUpdate,
+                icon: _isCheckingUpdate
+                    ? const SizedBox(
+                        width: 18,
+                        height: 18,
+                        child: CircularProgressIndicator(strokeWidth: 2))
+                    : const Icon(Icons.system_update_outlined),
+                label: Text(_isCheckingUpdate ? '正在检查' : '检查更新'),
               ),
             ],
           ),
@@ -1896,7 +2096,8 @@ class _SpeakerRecordsSheet extends StatelessWidget {
   final List<FamilyRole> familyRoles;
   final String? playingSegmentId;
   final ValueChanged<ConversationSegmentResult> onPlay;
-  final void Function(ConversationSegmentResult segment, String userId) onConfirm;
+  final void Function(ConversationSegmentResult segment, String userId)
+      onConfirm;
 
   @override
   Widget build(BuildContext context) {
@@ -1962,8 +2163,10 @@ class _SpeakerRecordsSheet extends StatelessWidget {
                                             fontWeight: FontWeight.w800)),
                                     PopupMenuButton<String>(
                                       tooltip: '归属到家庭成员',
-                                      icon: const Icon(Icons.person_search_outlined),
-                                      onSelected: (userId) => onConfirm(record, userId),
+                                      icon: const Icon(
+                                          Icons.person_search_outlined),
+                                      onSelected: (userId) =>
+                                          onConfirm(record, userId),
                                       itemBuilder: (context) => [
                                         for (final role in familyRoles)
                                           PopupMenuItem(
