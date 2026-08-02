@@ -89,3 +89,42 @@ jobs:
         with:
           files: ${{ steps.apk.outputs.path }}
           generate_release_notes: true
+
+      - name: Create signed update manifest
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          UPDATE_MANIFEST_PRIVATE_KEY_BASE64: ${{ secrets.UPDATE_MANIFEST_PRIVATE_KEY_BASE64 }}
+        run: |
+          test -n "$UPDATE_MANIFEST_PRIVATE_KEY_BASE64"
+          APK_PATH="${{ steps.apk.outputs.path }}"
+          APKSIGNER="$ANDROID_HOME/build-tools/$(ls "$ANDROID_HOME/build-tools" | sort -V | tail -1)/apksigner"
+          CERT_SHA256=$("$APKSIGNER" verify --print-certs "$APK_PATH" | sed -n 's/^Signer #1 certificate SHA-256 digest: //p' | head -n 1 | tr -d ':' | tr 'A-F' 'a-f')
+          test ${#CERT_SHA256} -eq 64
+          BUILD_NUMBER=$(sed -n 's/^version: .*+\([0-9][0-9]*\)$/\1/p' pubspec.yaml)
+          test -n "$BUILD_NUMBER"
+          dart run tool/create_signed_update_manifest.dart \
+            --apk "$APK_PATH" \
+            --version "${GITHUB_REF_NAME#v}" \
+            --build-number "$BUILD_NUMBER" \
+            --certificate-sha256 "$CERT_SHA256" \
+            --output "$RUNNER_TEMP/latest.json"
+
+      - name: Publish signed update feed
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          cd "$GITHUB_WORKSPACE"
+          if git ls-remote --exit-code --heads origin update-feed; then
+            git fetch origin update-feed
+            git switch --force --create update-feed FETCH_HEAD
+          else
+            git switch --orphan update-feed
+            git rm -rf .
+          fi
+          mkdir -p updates
+          cp "$RUNNER_TEMP/latest.json" updates/latest.json
+          git add updates/latest.json
+          git diff --cached --quiet && exit 0
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "publish signed update ${GITHUB_REF_NAME}"
+          git push origin HEAD:update-feed
