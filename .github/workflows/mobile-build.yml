@@ -118,7 +118,6 @@ jobs:
             git switch --force --create update-feed FETCH_HEAD
           else
             git switch --orphan update-feed
-            git rm -rf .
           fi
           mkdir -p updates
           cp "$RUNNER_TEMP/latest.json" updates/latest.json
