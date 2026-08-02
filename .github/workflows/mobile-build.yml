@@ -98,7 +98,7 @@ jobs:
           test -n "$UPDATE_MANIFEST_PRIVATE_KEY_BASE64"
           APK_PATH="${{ steps.apk.outputs.path }}"
           APKSIGNER="$ANDROID_HOME/build-tools/$(ls "$ANDROID_HOME/build-tools" | sort -V | tail -1)/apksigner"
-          CERT_SHA256=$("$APKSIGNER" verify --print-certs "$APK_PATH" | sed -n 's/^Signer #1 certificate SHA-256 digest: //p' | head -n 1 | tr -d ':' | tr 'A-F' 'a-f')
+          CERT_SHA256=$("$APKSIGNER" verify --print-certs "$APK_PATH" | awk -F ': ' '/certificate SHA-256 digest:/ {print tolower($NF); exit}')
           test ${#CERT_SHA256} -eq 64
           BUILD_NUMBER=$(sed -n 's/^version: .*+\([0-9][0-9]*\)$/\1/p' pubspec.yaml)
           test -n "$BUILD_NUMBER"
