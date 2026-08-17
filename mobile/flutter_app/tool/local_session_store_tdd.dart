@@ -1,4 +1,4 @@
-import '../lib/local/local_session_store.dart';
+import 'package:softerplease/local/local_session_store.dart';
 
 Future<void> main() async {
   final values = <String, String>{};
@@ -12,11 +12,17 @@ Future<void> main() async {
       durationSeconds: 12,
       transcript: '先停一下，我们慢慢说。',
       emotionValue: 0,
+      analysisState: 'completed',
+      emotionLabel: '平静',
+      speakerLabel: '妈妈',
     ),
   );
 
   final sessions = await store.loadAll();
-  if (sessions.length != 1 || sessions.single.transcript != '先停一下，我们慢慢说。') {
+  if (sessions.length != 1 ||
+      sessions.single.transcript != '先停一下，我们慢慢说。' ||
+      sessions.single.analysisState != 'completed' ||
+      sessions.single.speakerLabel != '妈妈') {
     throw StateError('local session was not persisted');
   }
 }

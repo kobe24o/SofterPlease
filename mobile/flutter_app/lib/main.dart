@@ -12,6 +12,7 @@ import 'package:record/record.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'local/local_session_store.dart';
+import 'local/model_pack.dart';
 import 'update/android_update_bridge.dart';
 import 'update/update_manifest.dart';
 import 'update/update_service.dart';
@@ -98,7 +99,6 @@ class _MonitorPageState extends State<MonitorPage> {
   bool _isRecording = false;
   bool _isLocalOnlySession = false;
   bool _isAnalyzing = false;
-  bool _isModelLoading = false;
   bool _isGeneratingAdvice = false;
   bool _isTestingLlm = false;
   bool _isCheckingUpdate = false;
@@ -110,8 +110,6 @@ class _MonitorPageState extends State<MonitorPage> {
   FamilyStats? _familyStats;
   DailyReport? _dailyReport;
   RangeReport? _rangeReport;
-  Map<String, dynamic>? _modelStatus;
-  Map<String, dynamic>? _speakerModelStatus;
   String? _lastAudioDebug;
   String? _familyAdvice;
   String? _playingSegmentId;
@@ -120,6 +118,7 @@ class _MonitorPageState extends State<MonitorPage> {
   List<FamilyRole> _familyRoles = [];
   List<SpeakerStats> _speakerStats = [];
   List<LocalSessionSummary> _localSessions = [];
+  LocalModelPack? _localModelPack;
 
   bool get _isLoggedIn => _token != null && _familyId != null;
 
@@ -180,8 +179,8 @@ class _MonitorPageState extends State<MonitorPage> {
       _setAuthHeader(token);
       await _syncUserFromServer(showError: false);
     }
-    await _loadSystemInfo(showError: false);
     await _loadLocalSessions();
+    await _loadLocalModelPack();
 
     if (mounted) {
       setState(() => _isLoading = false);
@@ -365,8 +364,6 @@ class _MonitorPageState extends State<MonitorPage> {
     try {
       final response = await _dio.get('/v1/system/info');
       final data = response.data as Map<String, dynamic>;
-      _modelStatus = data['emotion_model'] as Map<String, dynamic>?;
-      _speakerModelStatus = data['speaker_model'] as Map<String, dynamic>?;
       final audio = data['audio'] as Map<String, dynamic>?;
       _maxRecordingSeconds =
           (audio?['max_recording_seconds'] as num?)?.toInt() ?? 600;
@@ -424,24 +421,6 @@ class _MonitorPageState extends State<MonitorPage> {
       _showSnack('安装更新失败：${_formatError(error)}');
     } finally {
       if (mounted) setState(() => _isCheckingUpdate = false);
-    }
-  }
-
-  Future<void> _preloadModel() async {
-    setState(() => _isModelLoading = true);
-    try {
-      await _saveBaseUrl();
-      final response = await _dio.post('/v1/system/emotion-model/load');
-      final data = response.data as Map<String, dynamic>;
-      _modelStatus = data['emotion_model'] as Map<String, dynamic>?;
-      _speakerModelStatus = data['speaker_model'] as Map<String, dynamic>?;
-      final bothLoaded =
-          data['loaded'] == true && data['speaker_model_loaded'] == true;
-      _showSnack(bothLoaded ? '情绪与说话人模型已加载' : '部分模型未加载，请查看状态错误');
-    } catch (error) {
-      _showSnack('预加载模型失败：${_formatError(error)}');
-    } finally {
-      if (mounted) setState(() => _isModelLoading = false);
     }
   }
 
@@ -732,31 +711,6 @@ class _MonitorPageState extends State<MonitorPage> {
     }
   }
 
-  Future<void> _startBackendSession() async {
-    if (!_isLoggedIn) {
-      _showSnack('请先在“我的”页面连接服务器并注册');
-      setState(() => _tabIndex = 2);
-      return;
-    }
-    setState(() => _isLoading = true);
-    try {
-      final response = await _dio.post('/v1/sessions/start', data: {
-        'family_id': _familyId,
-        'device_id': 'android-${DateTime.now().millisecondsSinceEpoch}',
-        'device_type': 'android',
-      });
-      setState(() {
-        _sessionId = response.data['session_id'] as String;
-        _isLocalOnlySession = false;
-      });
-      await _refreshStats(showError: false);
-    } catch (error) {
-      _showSnack('开始会话失败：${_formatError(error)}');
-    } finally {
-      if (mounted) setState(() => _isLoading = false);
-    }
-  }
-
   Future<void> _endBackendSession() async {
     if (_sessionId == null) return;
     if (_isLocalOnlySession) {
@@ -950,6 +904,12 @@ class _MonitorPageState extends State<MonitorPage> {
     if (mounted) setState(() => _localSessions = sessions);
   }
 
+  Future<void> _loadLocalModelPack() async {
+    final documents = await getApplicationDocumentsDirectory();
+    final pack = await LocalModelPack.inspect(documents);
+    if (mounted) setState(() => _localModelPack = pack);
+  }
+
   Future<void> _playLocalSession(LocalSessionSummary session) async {
     final file = File(session.audioPath);
     if (!await file.exists()) {
@@ -1098,11 +1058,10 @@ class _MonitorPageState extends State<MonitorPage> {
         actions: [
           IconButton(
             onPressed: () async {
-              await _loadSystemInfo(showError: false);
-              await _syncUserFromServer(showError: false);
-              await _refreshStats(showError: false);
+              await _loadLocalSessions();
+              await _loadLocalModelPack();
             },
-            tooltip: '刷新',
+            tooltip: '刷新本地数据',
             icon: const Icon(Icons.sync),
           ),
         ],
@@ -1141,20 +1100,18 @@ class _MonitorPageState extends State<MonitorPage> {
         ),
         const SizedBox(height: 16),
         _InfoPanel(
-          title: _isLocalOnlySession ? '本地录音会话' : '长录音智能切句',
+          title: '本地录音会话',
           body:
-              '最长 ${(_maxRecordingSeconds / 60).toStringAsFixed(0)} 分钟；系统按停顿自动切句，单句不超过 ${_modelSegmentSeconds.toStringAsFixed(0)} 秒，并区分不同说话人。',
+              '录音保留在手机；模型包就绪后，VAD、转写、情绪标签与说话人归属均在本机处理。最长 ${(_maxRecordingSeconds / 60).toStringAsFixed(0)} 分钟。',
           actionLabel: _sessionId == null ? '开始本地会话后录音' : '已准备好',
-          onAction: _sessionId == null
-              ? (_isLoggedIn ? _startBackendSession : _startLocalSession)
-              : () {},
+          onAction: _sessionId == null ? _startLocalSession : () {},
         ),
         const SizedBox(height: 16),
         if (_sessionId == null)
           FilledButton.icon(
-            onPressed: _isLoggedIn ? _startBackendSession : _startLocalSession,
+            onPressed: _startLocalSession,
             icon: const Icon(Icons.play_arrow),
-            label: Text(_isLoggedIn ? '开始云端会话' : '开始离线会话'),
+            label: const Text('开始本地会话'),
           )
         else
           Row(
@@ -1164,10 +1121,8 @@ class _MonitorPageState extends State<MonitorPage> {
                   onPressed: _isAnalyzing ? null : _toggleRecording,
                   icon: Icon(_isRecording ? Icons.stop : Icons.mic),
                   label: Text(_isRecording
-                      ? (_isLocalOnlySession
-                          ? '停止并保存 ${_formatDuration(_recordingSeconds)}'
-                          : '停止并分析 ${_formatDuration(_recordingSeconds)}')
-                      : '开始长录音'),
+                      ? '停止并保存 ${_formatDuration(_recordingSeconds)}'
+                      : '开始录音'),
                 ),
               ),
               const SizedBox(width: 12),
@@ -1179,14 +1134,7 @@ class _MonitorPageState extends State<MonitorPage> {
             ],
           ),
         const SizedBox(height: 16),
-        _ModelPanel(
-          status: _modelStatus,
-          speakerStatus: _speakerModelStatus,
-          latestBackend: result?.modelBackend,
-          isLoading: _isModelLoading,
-          onRefresh: () => _loadSystemInfo(),
-          onPreload: _preloadModel,
-        ),
+        _LocalModelPackPanel(pack: _localModelPack),
         if (_segments.isNotEmpty) ...[
           const SizedBox(height: 20),
           Text('逐句记录',
@@ -1222,10 +1170,12 @@ class _MonitorPageState extends State<MonitorPage> {
               child: ListTile(
                 leading: const Icon(Icons.phone_android_outlined),
                 title: Text(session.transcript.isEmpty
-                    ? '等待端侧识别的离线录音'
+                    ? (session.analysisState == 'awaiting_model'
+                        ? '等待安装本地模型包'
+                        : '本地录音')
                     : session.transcript),
-                subtitle:
-                    Text('${session.durationSeconds} 秒 · ${session.createdAt}'),
+                subtitle: Text(
+                    '${session.durationSeconds} 秒 · ${session.createdAt}${session.speakerLabel.isEmpty ? '' : ' · ${session.speakerLabel}'}'),
                 trailing: IconButton(
                   tooltip: '播放',
                   icon: const Icon(Icons.play_arrow),
@@ -1286,7 +1236,7 @@ class _MonitorPageState extends State<MonitorPage> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text('服务器',
+              Text('可选服务器连接',
                   style: Theme.of(context)
                       .textTheme
                       .titleMedium
@@ -1312,13 +1262,6 @@ class _MonitorPageState extends State<MonitorPage> {
                     ),
                   ),
                   const SizedBox(width: 12),
-                  Expanded(
-                    child: FilledButton.icon(
-                      onPressed: _preloadModel,
-                      icon: const Icon(Icons.memory),
-                      label: Text(_isModelLoading ? '加载中' : '预加载模型'),
-                    ),
-                  ),
                 ],
               ),
             ],
@@ -1353,14 +1296,7 @@ class _MonitorPageState extends State<MonitorPage> {
           ),
         ),
         const SizedBox(height: 16),
-        _ModelPanel(
-          status: _modelStatus,
-          speakerStatus: _speakerModelStatus,
-          latestBackend: _latestResult?.modelBackend,
-          isLoading: _isModelLoading,
-          onRefresh: () => _loadSystemInfo(),
-          onPreload: _preloadModel,
-        ),
+        _LocalModelPackPanel(pack: _localModelPack),
         const SizedBox(height: 16),
         _Panel(
           child: Column(
@@ -1680,88 +1616,42 @@ class _StatusPanel extends StatelessWidget {
   }
 }
 
-class _ModelPanel extends StatelessWidget {
-  const _ModelPanel({
-    required this.status,
-    required this.speakerStatus,
-    required this.latestBackend,
-    required this.isLoading,
-    required this.onRefresh,
-    required this.onPreload,
-  });
+class _LocalModelPackPanel extends StatelessWidget {
+  const _LocalModelPackPanel({required this.pack});
 
-  final Map<String, dynamic>? status;
-  final Map<String, dynamic>? speakerStatus;
-  final String? latestBackend;
-  final bool isLoading;
-  final VoidCallback onRefresh;
-  final VoidCallback onPreload;
+  final LocalModelPack? pack;
 
   @override
   Widget build(BuildContext context) {
-    final backend = status?['backend']?.toString() ?? '--';
-    var loaded = false;
-    if (backend == 'sensevoice') {
-      loaded = status?['sensevoice_loaded'] == true;
-    } else if (backend == 'caire') {
-      loaded = status?['caire_loaded'] == true;
-    } else if (backend == 'rule') {
-      loaded = true;
-    }
-    final device = status?['device']?.toString() ?? '--';
-    final cuda = status?['torch_cuda_available'] == true ? '可用' : '不可用';
-    String? error;
-    String? modelId;
-    if (backend == 'sensevoice') {
-      error = status?['sensevoice_load_error']?.toString();
-      modelId = status?['sensevoice_model_id']?.toString();
-    } else if (backend == 'caire') {
-      error = status?['caire_load_error']?.toString();
-      modelId = status?['caire_model_id']?.toString();
-    }
-
+    final isInstalled = pack?.isInstalled == true;
     return _Panel(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          _SectionHeader(
-              title: '模型状态', actionIcon: Icons.refresh, onAction: onRefresh),
-          _MetricRow(label: '后端', value: backend),
-          _MetricRow(label: '模型', value: modelId ?? '--'),
-          _MetricRow(label: '设备', value: device),
-          _MetricRow(label: 'CUDA', value: cuda),
-          _MetricRow(label: '状态', value: loaded ? '已加载' : '未加载'),
-          _MetricRow(
-            label: '说话人模型',
-            value: speakerStatus?['speaker_model_loaded'] == true
-                ? '${speakerStatus?['speaker_model_id'] ?? 'CAM++'} 已加载'
-                : '${speakerStatus?['speaker_model_id'] ?? 'CAM++'} 未加载',
+          Row(
+            children: [
+              Icon(
+                isInstalled ? Icons.verified_outlined : Icons.download_outlined,
+                color: isInstalled
+                    ? const Color(0xFF2E7D64)
+                    : Colors.orange.shade800,
+              ),
+              const SizedBox(width: 8),
+              Text('本地语音模型',
+                  style: Theme.of(context)
+                      .textTheme
+                      .titleMedium
+                      ?.copyWith(fontWeight: FontWeight.w700)),
+            ],
           ),
-          if (latestBackend != null)
-            _MetricRow(label: '最近推理', value: latestBackend!),
-          if (error != null && error.isNotEmpty)
-            Text(error,
-                maxLines: 3,
-                overflow: TextOverflow.ellipsis,
-                style: const TextStyle(color: Color(0xFFD9534F))),
-          if ((speakerStatus?['speaker_model_error']?.toString() ?? '')
-              .isNotEmpty)
-            Text(
-              speakerStatus!['speaker_model_error'].toString(),
-              maxLines: 3,
-              overflow: TextOverflow.ellipsis,
-              style: const TextStyle(color: Color(0xFFD9534F)),
-            ),
           const SizedBox(height: 8),
-          OutlinedButton.icon(
-            onPressed: isLoading ? null : onPreload,
-            icon: isLoading
-                ? const SizedBox(
-                    width: 18,
-                    height: 18,
-                    child: CircularProgressIndicator(strokeWidth: 2))
-                : const Icon(Icons.memory),
-            label: Text(isLoading ? '加载中' : '预加载模型'),
+          Text(pack?.message ?? '正在检查本地模型包…'),
+          const SizedBox(height: 8),
+          Text(
+            isInstalled
+                ? 'SenseVoice · Ten-VAD · 说话人模型将只在本机运行。'
+                : '模型安装后，录音不会上传；未安装时仍可安全保存录音。',
+            style: Theme.of(context).textTheme.bodySmall,
           ),
         ],
       ),

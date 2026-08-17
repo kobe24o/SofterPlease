@@ -26,7 +26,7 @@ Use `10.0.2.2` only for the Android emulator. Use your computer's LAN IP when te
 ## Conversation workflow
 
 1. Start a session and record naturally for up to 10 minutes.
-2. The backend uses VAD to create utterances of at most 25 seconds and runs SenseVoice on each utterance.
+2. Android first saves a 16 kHz mono WAV locally. When the on-device model pack is installed, VAD, transcription, coarse emotion tags and speaker embedding run locally; the recording is never uploaded automatically.
 3. Play any saved utterance and use the person button to confirm which family member spoke it.
 4. Confirming a role updates that member's voice embedding and reclassifies similar utterances in the same recording.
 5. Rename a detected speaker in Statistics. Its stable `spk_xxx` identity is reused for future matching and historical grouping.
@@ -37,6 +37,19 @@ Configure an OpenAI-compatible Base URL, model and API key under **My > Family a
 
 The launcher and app bar use the new SofterPlease conversation-home-heart brand mark from `assets/branding/softerplease-logo.png`.
 
-Speaker embeddings use FunASR CAM++ by default. The backend lazily downloads `iic/speech_campplus_sv_zh-cn_16k-common`, runs it on CUDA when available, clusters at a 0.40 cosine distance, and caps diarization windows at 8 seconds.
+## On-device model pack
+
+The app intentionally does not bundle model weights into the APK. Install the verified model pack under the app documents directory using this layout:
+
+```text
+models/
+  sensevoice/model.int8.onnx
+  vad/ten-vad.int8.onnx
+  speaker/model.onnx
+```
+
+Until all three files are present, the app records and stores sessions locally but marks them as awaiting on-device analysis. This prevents a partial or missing pack from silently falling back to server-side audio processing.
+
+Family advice remains optional and network-based. Send only the user-selected transcript or summary to that model; do not upload raw recordings or speaker embeddings.
 
 For Xunfei MaaS, set the Base URL to `https://maas-api.cn-huabei-1.xf-yun.com/v2` and enter the model ID assigned by MaaS. Use **Test connection** before generating advice. The backend does not inherit desktop proxy variables and allows up to 180 seconds for a full report response.

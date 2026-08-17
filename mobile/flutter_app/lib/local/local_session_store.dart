@@ -13,6 +13,9 @@ final class LocalSessionSummary {
     required this.durationSeconds,
     required this.transcript,
     required this.emotionValue,
+    this.analysisState = 'awaiting_model',
+    this.emotionLabel = '',
+    this.speakerLabel = '',
   });
 
   final String id;
@@ -21,6 +24,9 @@ final class LocalSessionSummary {
   final int durationSeconds;
   final String transcript;
   final int emotionValue;
+  final String analysisState;
+  final String emotionLabel;
+  final String speakerLabel;
 
   Map<String, Object> toJson() => {
         'id': id,
@@ -29,6 +35,9 @@ final class LocalSessionSummary {
         'duration_seconds': durationSeconds,
         'transcript': transcript,
         'emotion_value': emotionValue,
+        'analysis_state': analysisState,
+        'emotion_label': emotionLabel,
+        'speaker_label': speakerLabel,
       };
 
   factory LocalSessionSummary.fromJson(Map<String, dynamic> json) {
@@ -39,6 +48,9 @@ final class LocalSessionSummary {
       durationSeconds: (json['duration_seconds'] as num?)?.toInt() ?? 0,
       transcript: json['transcript']?.toString() ?? '',
       emotionValue: (json['emotion_value'] as num?)?.toInt() ?? 0,
+      analysisState: json['analysis_state']?.toString() ?? 'awaiting_model',
+      emotionLabel: json['emotion_label']?.toString() ?? '',
+      speakerLabel: json['speaker_label']?.toString() ?? '',
     );
   }
 }
