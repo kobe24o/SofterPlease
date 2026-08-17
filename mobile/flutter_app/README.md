@@ -39,7 +39,7 @@ The launcher and app bar use the new SofterPlease conversation-home-heart brand 
 
 ## On-device model pack
 
-The app intentionally does not bundle model weights into the APK. Install the verified model pack under the app documents directory using this layout:
+Release APKs bundle the verified model pack. The app extracts it into its private documents directory on first launch using this layout:
 
 ```text
 models/
@@ -48,7 +48,7 @@ models/
   speaker/model.onnx
 ```
 
-Until all three files are present, the app records and stores sessions locally but marks them as awaiting on-device analysis. This prevents a partial or missing pack from silently falling back to server-side audio processing.
+Until extraction is complete, the app records and stores sessions locally but marks them as awaiting on-device analysis. This prevents a partial or missing pack from silently falling back to server-side audio processing.
 
 Family advice remains optional and network-based. Send only the user-selected transcript or summary to that model; do not upload raw recordings or speaker embeddings.
 

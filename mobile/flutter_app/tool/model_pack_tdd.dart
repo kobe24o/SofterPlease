@@ -12,6 +12,7 @@ Future<void> main() async {
     }
     for (final path in <String>[
       absent.senseVoicePath,
+      absent.senseVoiceTokensPath,
       absent.vadPath,
       absent.speakerPath,
     ]) {

@@ -53,6 +53,24 @@ jobs:
           keyPassword=$ANDROID_KEY_PASSWORD
           EOF
 
+      - name: Bundle verified offline speech models
+        run: |
+          mkdir -p assets/models/sensevoice assets/models/vad assets/models/speaker
+          curl --fail --location --retry 3 --output "$RUNNER_TEMP/sensevoice.tar.bz2" \
+            https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2025-09-09.tar.bz2
+          tar -xjf "$RUNNER_TEMP/sensevoice.tar.bz2" -C "$RUNNER_TEMP"
+          SENSEVOICE_DIR="$RUNNER_TEMP/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2025-09-09"
+          install -m 0644 "$SENSEVOICE_DIR/model.int8.onnx" assets/models/sensevoice/model.int8.onnx
+          install -m 0644 "$SENSEVOICE_DIR/tokens.txt" assets/models/sensevoice/tokens.txt
+          curl --fail --location --retry 3 --output assets/models/vad/ten-vad.int8.onnx \
+            https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/ten-vad.int8.onnx
+          curl --fail --location --retry 3 --output assets/models/speaker/model.onnx \
+            https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/3dspeaker_speech_eres2net_base_sv_zh-cn_3dspeaker_16k.onnx
+          test -s assets/models/sensevoice/model.int8.onnx
+          test -s assets/models/sensevoice/tokens.txt
+          test -s assets/models/vad/ten-vad.int8.onnx
+          test -s assets/models/speaker/model.onnx
+
       - name: Flutter pub get
         run: flutter pub get
 

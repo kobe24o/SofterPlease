@@ -13,6 +13,8 @@ final class LocalModelPack {
 
   String get senseVoicePath =>
       '${root.path}${Platform.pathSeparator}sensevoice${Platform.pathSeparator}model.int8.onnx';
+  String get senseVoiceTokensPath =>
+      '${root.path}${Platform.pathSeparator}sensevoice${Platform.pathSeparator}tokens.txt';
   String get vadPath =>
       '${root.path}${Platform.pathSeparator}vad${Platform.pathSeparator}ten-vad.int8.onnx';
   String get speakerPath =>
@@ -23,6 +25,7 @@ final class LocalModelPack {
         Directory('${documentsDirectory.path}${Platform.pathSeparator}models');
     final required = <String>[
       '${root.path}${Platform.pathSeparator}sensevoice${Platform.pathSeparator}model.int8.onnx',
+      '${root.path}${Platform.pathSeparator}sensevoice${Platform.pathSeparator}tokens.txt',
       '${root.path}${Platform.pathSeparator}vad${Platform.pathSeparator}ten-vad.int8.onnx',
       '${root.path}${Platform.pathSeparator}speaker${Platform.pathSeparator}model.onnx',
     ];

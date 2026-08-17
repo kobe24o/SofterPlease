@@ -1,5 +1,5 @@
 name: softerplease
-version: 2.2.7+10
+version: 2.2.8+11
 publish_to: 'none'
 
 environment:
@@ -31,6 +31,10 @@ flutter:
   uses-material-design: true
   assets:
     - assets/branding/softerplease-logo.png
+    - assets/models/sensevoice/model.int8.onnx
+    - assets/models/sensevoice/tokens.txt
+    - assets/models/vad/ten-vad.int8.onnx
+    - assets/models/speaker/model.onnx
 
 flutter_launcher_icons:
   android: true
