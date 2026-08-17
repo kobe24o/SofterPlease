@@ -12,6 +12,7 @@ import 'package:record/record.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'local/local_session_store.dart';
+import 'local/bundled_model_installer.dart';
 import 'local/model_pack.dart';
 import 'update/android_update_bridge.dart';
 import 'update/update_manifest.dart';
@@ -906,7 +907,7 @@ class _MonitorPageState extends State<MonitorPage> {
 
   Future<void> _loadLocalModelPack() async {
     final documents = await getApplicationDocumentsDirectory();
-    final pack = await LocalModelPack.inspect(documents);
+    final pack = await BundledModelInstaller.installIfNeeded(documents);
     if (mounted) setState(() => _localModelPack = pack);
   }
 
