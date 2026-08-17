@@ -17,10 +17,10 @@ class BundledModelChannel(private val activity: MainActivity) {
                         ?: throw IllegalArgumentException("Missing rootPath")
                     val root = File(rootPath)
                     val assets = listOf(
-                        "assets/flutter_assets/assets/models/sensevoice/model.int8.onnx" to "sensevoice/model.int8.onnx",
-                        "assets/flutter_assets/assets/models/sensevoice/tokens.txt" to "sensevoice/tokens.txt",
-                        "assets/flutter_assets/assets/models/vad/ten-vad.int8.onnx" to "vad/ten-vad.int8.onnx",
-                        "assets/flutter_assets/assets/models/speaker/model.onnx" to "speaker/model.onnx",
+                        "flutter_assets/assets/models/sensevoice/model.int8.onnx" to "sensevoice/model.int8.onnx",
+                        "flutter_assets/assets/models/sensevoice/tokens.txt" to "sensevoice/tokens.txt",
+                        "flutter_assets/assets/models/vad/ten-vad.int8.onnx" to "vad/ten-vad.int8.onnx",
+                        "flutter_assets/assets/models/speaker/model.onnx" to "speaker/model.onnx",
                     )
                     for ((assetPath, outputPath) in assets) {
                         val output = File(root, outputPath)
