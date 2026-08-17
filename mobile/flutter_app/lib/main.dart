@@ -14,6 +14,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'local/local_session_store.dart';
 import 'local/bundled_model_installer.dart';
 import 'local/model_pack.dart';
+import 'local/local_speech_analysis.dart';
 import 'update/android_update_bridge.dart';
 import 'update/update_manifest.dart';
 import 'update/update_service.dart';
@@ -83,6 +84,7 @@ class _MonitorPageState extends State<MonitorPage> {
   final _llmApiKeyController = TextEditingController();
   final _recorder = AudioRecorder();
   final _audioPlayer = AudioPlayer();
+  final _localSpeechAnalyzer = LocalSpeechAnalyzer();
   final _secureStorage = const FlutterSecureStorage();
   late final Dio _dio;
   Future<String?>? _tokenRefreshFuture;
@@ -155,36 +157,47 @@ class _MonitorPageState extends State<MonitorPage> {
   }
 
   Future<void> _restoreSession() async {
-    final prefs = await SharedPreferences.getInstance();
-    final apiBaseUrl = prefs.getString('api_base_url') ?? _defaultBaseUrl;
-    final token = prefs.getString('token');
-    final userId = prefs.getString('user_id');
-    final nickname = prefs.getString('nickname');
-    final familyId = prefs.getString('family_id');
-    final familyName = prefs.getString('family_name');
-    _llmBaseUrlController.text =
-        prefs.getString('llm_base_url') ?? 'https://api.openai.com/v1';
-    _llmModelController.text = prefs.getString('llm_model') ?? 'gpt-4o-mini';
-    _llmApiKeyController.text =
-        await _secureStorage.read(key: 'llm_api_key') ?? '';
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final apiBaseUrl = prefs.getString('api_base_url') ?? _defaultBaseUrl;
+      final token = prefs.getString('token');
+      final userId = prefs.getString('user_id');
+      final nickname = prefs.getString('nickname');
+      final familyId = prefs.getString('family_id');
+      final familyName = prefs.getString('family_name');
+      _llmBaseUrlController.text =
+          prefs.getString('llm_base_url') ?? 'https://api.openai.com/v1';
+      _llmModelController.text = prefs.getString('llm_model') ?? 'gpt-4o-mini';
+      try {
+        _llmApiKeyController.text = await _secureStorage
+                .read(key: 'llm_api_key')
+                .timeout(const Duration(seconds: 2)) ??
+            '';
+      } catch (_) {
+        // The optional network-advice key must not block local-only startup.
+        _llmApiKeyController.text = '';
+      }
 
-    _apiBaseUrlController.text = apiBaseUrl;
-    _dio.options.baseUrl = apiBaseUrl;
+      _apiBaseUrlController.text = apiBaseUrl;
+      _dio.options.baseUrl = apiBaseUrl;
 
-    if (token != null && userId != null) {
-      _token = token;
-      _userId = userId;
-      _nickname = nickname;
-      _familyId = familyId;
-      _familyName = familyName;
-      _setAuthHeader(token);
-      await _syncUserFromServer(showError: false);
-    }
-    await _loadLocalSessions();
-    await _loadLocalModelPack();
-
-    if (mounted) {
-      setState(() => _isLoading = false);
+      if (token != null && userId != null) {
+        _token = token;
+        _userId = userId;
+        _nickname = nickname;
+        _familyId = familyId;
+        _familyName = familyName;
+        _setAuthHeader(token);
+        await _syncUserFromServer(showError: false);
+      }
+      await _loadLocalSessions();
+      await _loadLocalModelPack();
+    } catch (error) {
+      _lastAudioDebug = '本地启动信息读取失败：${_formatError(error)}';
+    } finally {
+      if (mounted) {
+        setState(() => _isLoading = false);
+      }
     }
   }
 
@@ -829,12 +842,29 @@ class _MonitorPageState extends State<MonitorPage> {
       });
 
       if (_isLocalOnlySession) {
+        final modelPack = _localModelPack;
+        if (modelPack?.isInstalled != true) {
+          await _saveLocalSession(
+            path: path,
+            durationSeconds: audioSeconds.round(),
+          );
+          setState(() {
+            _lastAudioDebug = '录音已仅保存在本机；本地模型安装完成后可重新分析。';
+          });
+          return;
+        }
+        setState(() {
+          _lastAudioDebug = '正在使用本地 Ten-VAD、SenseVoice 和声纹模型分析…';
+        });
+        final analysis = await _analyzeLocalAudio(path, modelPack!);
         await _saveLocalSession(
           path: path,
           durationSeconds: audioSeconds.round(),
+          analysis: analysis,
         );
         setState(() {
-          _lastAudioDebug = '录音已仅保存在本机；端侧语音识别接入后将在此离线分析。';
+          _lastAudioDebug =
+              '本地分析完成：${analysis.speechSegmentCount} 段语音 · ${analysis.speakerLabel}';
         });
         return;
       }
@@ -884,6 +914,7 @@ class _MonitorPageState extends State<MonitorPage> {
   Future<void> _saveLocalSession({
     required String path,
     required int durationSeconds,
+    LocalSpeechAnalysis? analysis,
   }) async {
     final preferences = await SharedPreferences.getInstance();
     final store = LocalSessionStore(_SharedPreferencesStorage(preferences));
@@ -892,8 +923,11 @@ class _MonitorPageState extends State<MonitorPage> {
       createdAt: DateTime.now().toUtc().toIso8601String(),
       audioPath: path,
       durationSeconds: durationSeconds,
-      transcript: '',
-      emotionValue: 0,
+      transcript: analysis?.transcript ?? '',
+      emotionValue: analysis?.emotionValue ?? 0,
+      analysisState: analysis == null ? 'awaiting_model' : 'completed',
+      emotionLabel: analysis?.emotionLabel ?? '',
+      speakerLabel: analysis?.speakerLabel ?? '',
     ));
     await _loadLocalSessions();
   }
@@ -906,9 +940,62 @@ class _MonitorPageState extends State<MonitorPage> {
   }
 
   Future<void> _loadLocalModelPack() async {
-    final documents = await getApplicationDocumentsDirectory();
+    final documents = await getApplicationDocumentsDirectory()
+        .timeout(const Duration(seconds: 2));
     final pack = await BundledModelInstaller.installIfNeeded(documents);
     if (mounted) setState(() => _localModelPack = pack);
+  }
+
+  Future<LocalSpeechAnalysis> _analyzeLocalAudio(
+    String audioPath,
+    LocalModelPack modelPack,
+  ) async {
+    await Future<void>.delayed(const Duration(milliseconds: 16));
+    return _localSpeechAnalyzer.analyze(
+      audioPath: audioPath,
+      modelPack: modelPack,
+    );
+  }
+
+  Future<void> _reanalyzeLocalSession(LocalSessionSummary session) async {
+    if (_isAnalyzing) return;
+    final modelPack = _localModelPack;
+    if (modelPack?.isInstalled != true) {
+      _showSnack('本地模型尚未就绪，请稍后刷新后重试');
+      return;
+    }
+    if (!await File(session.audioPath).exists()) {
+      _showSnack('本地录音文件已不存在');
+      return;
+    }
+    setState(() {
+      _isAnalyzing = true;
+      _lastAudioDebug = '正在重新离线分析已保存录音…';
+    });
+    try {
+      final analysis = await _analyzeLocalAudio(session.audioPath, modelPack!);
+      final preferences = await SharedPreferences.getInstance();
+      await LocalSessionStore(_SharedPreferencesStorage(preferences)).save(
+        session.copyWith(
+          transcript: analysis.transcript,
+          emotionValue: analysis.emotionValue,
+          analysisState: 'completed',
+          emotionLabel: analysis.emotionLabel,
+          speakerLabel: analysis.speakerLabel,
+        ),
+      );
+      await _loadLocalSessions();
+      if (mounted) {
+        setState(() {
+          _lastAudioDebug =
+              '本地分析完成：${analysis.speechSegmentCount} 段语音 · ${analysis.speakerLabel}';
+        });
+      }
+    } catch (error) {
+      _showSnack('本地分析失败：${_formatError(error)}');
+    } finally {
+      if (mounted) setState(() => _isAnalyzing = false);
+    }
   }
 
   Future<void> _playLocalSession(LocalSessionSummary session) async {
@@ -1176,11 +1263,23 @@ class _MonitorPageState extends State<MonitorPage> {
                         : '本地录音')
                     : session.transcript),
                 subtitle: Text(
-                    '${session.durationSeconds} 秒 · ${session.createdAt}${session.speakerLabel.isEmpty ? '' : ' · ${session.speakerLabel}'}'),
-                trailing: IconButton(
-                  tooltip: '播放',
-                  icon: const Icon(Icons.play_arrow),
-                  onPressed: () => _playLocalSession(session),
+                    '${session.durationSeconds} 秒 · ${session.createdAt}${session.emotionLabel.isEmpty ? '' : ' · ${session.emotionLabel}'}${session.speakerLabel.isEmpty ? '' : ' · ${session.speakerLabel}'}'),
+                trailing: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    IconButton(
+                      tooltip: '重新本地分析',
+                      icon: const Icon(Icons.auto_awesome_outlined),
+                      onPressed: _isAnalyzing
+                          ? null
+                          : () => _reanalyzeLocalSession(session),
+                    ),
+                    IconButton(
+                      tooltip: '播放',
+                      icon: const Icon(Icons.play_arrow),
+                      onPressed: () => _playLocalSession(session),
+                    ),
+                  ],
                 ),
               ),
             ),

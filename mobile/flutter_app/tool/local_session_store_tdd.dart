@@ -25,6 +25,19 @@ Future<void> main() async {
       sessions.single.speakerLabel != '妈妈') {
     throw StateError('local session was not persisted');
   }
+
+  await store.save(
+    sessions.single.copyWith(
+      transcript: '我们换一种说法。',
+      emotionLabel: '积极',
+      speakerLabel: '检测到 2 位说话人',
+    ),
+  );
+  final updated = await store.loadAll();
+  if (updated.single.transcript != '我们换一种说法。' ||
+      updated.single.speakerLabel != '检测到 2 位说话人') {
+    throw StateError('local session analysis was not updated');
+  }
 }
 
 final class _MapStorage implements LocalStringStorage {

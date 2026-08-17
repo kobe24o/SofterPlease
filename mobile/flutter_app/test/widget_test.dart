@@ -15,7 +15,10 @@ void main() {
     SharedPreferences.setMockInitialValues({});
 
     await tester.pumpWidget(const SofterPleaseApp());
-    await tester.pumpAndSettle();
+    await tester.pump();
+    await tester.pump(const Duration(seconds: 3));
+    await tester.pump(const Duration(seconds: 3));
+    await tester.pump();
 
     expect(find.text('SofterPlease'), findsOneWidget);
     expect(find.text('游客模式'), findsOneWidget);

@@ -28,6 +28,26 @@ final class LocalSessionSummary {
   final String emotionLabel;
   final String speakerLabel;
 
+  LocalSessionSummary copyWith({
+    String? transcript,
+    int? emotionValue,
+    String? analysisState,
+    String? emotionLabel,
+    String? speakerLabel,
+  }) {
+    return LocalSessionSummary(
+      id: id,
+      createdAt: createdAt,
+      audioPath: audioPath,
+      durationSeconds: durationSeconds,
+      transcript: transcript ?? this.transcript,
+      emotionValue: emotionValue ?? this.emotionValue,
+      analysisState: analysisState ?? this.analysisState,
+      emotionLabel: emotionLabel ?? this.emotionLabel,
+      speakerLabel: speakerLabel ?? this.speakerLabel,
+    );
+  }
+
   Map<String, Object> toJson() => {
         'id': id,
         'created_at': createdAt,
