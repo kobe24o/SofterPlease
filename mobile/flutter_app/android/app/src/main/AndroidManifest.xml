@@ -6,8 +6,7 @@
     <application
         android:label="SofterPlease"
         android:name="${applicationName}"
-        android:icon="@mipmap/ic_launcher"
-        android:usesCleartextTraffic="true">
+        android:icon="@mipmap/ic_launcher">
         <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="${applicationId}.update-files"

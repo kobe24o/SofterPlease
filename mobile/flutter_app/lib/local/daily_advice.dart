@@ -2,7 +2,6 @@ import 'dart:convert';
 
 import 'package:dio/dio.dart';
 
-import 'conversation_models.dart';
 import 'local_session_store.dart';
 
 final class DailyAdviceRequest {
@@ -51,17 +50,17 @@ final class DailyAdviceRequest {
   }
 
   List<Map<String, String>> messages() => [
-    {
-      'role': 'system',
-      'content': '你是一位重视尊重、倾听和非暴力沟通的家庭沟通教练。'
-          '请根据当天对话，给出简短、具体、不过度诊断的中文建议。'
-          '不要复述隐私内容，不要把情绪标签当作医学结论。',
-    },
-    {
-      'role': 'user',
-      'content': '以下是今天在本机整理的对话：\n$transcript',
-    },
-  ];
+        {
+          'role': 'system',
+          'content': '你是一位重视尊重、倾听和非暴力沟通的家庭沟通教练。'
+              '请根据当天对话，给出简短、具体、不过度诊断的中文建议。'
+              '不要复述隐私内容，不要把情绪标签当作医学结论。',
+        },
+        {
+          'role': 'user',
+          'content': '以下是今天在本机整理的对话：\n$transcript',
+        },
+      ];
 }
 
 final class DailyAdviceResponse {
@@ -102,13 +101,13 @@ final class LlmSettings {
   Map<String, String> toJson() => {'base_url': baseUrl, 'model': model};
 
   factory LlmSettings.fromJson(Map<String, dynamic> json) => LlmSettings(
-    baseUrl: json['base_url']?.toString().trim().isNotEmpty == true
-        ? json['base_url'].toString().trim()
-        : 'https://api.openai.com/v1',
-    model: json['model']?.toString().trim().isNotEmpty == true
-        ? json['model'].toString().trim()
-        : 'gpt-4o-mini',
-  );
+        baseUrl: json['base_url']?.toString().trim().isNotEmpty == true
+            ? json['base_url'].toString().trim()
+            : 'https://api.openai.com/v1',
+        model: json['model']?.toString().trim().isNotEmpty == true
+            ? json['model'].toString().trim()
+            : 'gpt-4o-mini',
+      );
 }
 
 abstract interface class SecureTextStorage {
@@ -181,7 +180,8 @@ final class OpenAiCompatibleAdviceClient {
         ),
       );
       if (response.data is! Map) throw const FormatException('模型响应格式无效');
-      return DailyAdviceResponse.extract(Map<String, dynamic>.from(response.data as Map));
+      return DailyAdviceResponse.extract(
+          Map<String, dynamic>.from(response.data as Map));
     } on DioException catch (error) {
       throw StateError('模型连接失败：${error.message ?? '请检查地址、网络和 Key'}');
     }

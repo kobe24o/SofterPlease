@@ -11,7 +11,8 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:softerplease/main.dart';
 
 void main() {
-  testWidgets('renders main shell without login gate', (WidgetTester tester) async {
+  testWidgets('renders the local-only record conversation and family tabs',
+      (WidgetTester tester) async {
     SharedPreferences.setMockInitialValues({});
 
     await tester.pumpWidget(const SofterPleaseApp());
@@ -21,7 +22,9 @@ void main() {
     await tester.pump();
 
     expect(find.text('SofterPlease'), findsOneWidget);
-    expect(find.text('游客模式'), findsOneWidget);
-    expect(find.text('我的'), findsOneWidget);
+    expect(find.text('记录'), findsOneWidget);
+    expect(find.text('对话'), findsOneWidget);
+    expect(find.text('家庭'), findsOneWidget);
+    expect(find.textContaining('所有录音与声纹仅保存在本机'), findsOneWidget);
   });
 }

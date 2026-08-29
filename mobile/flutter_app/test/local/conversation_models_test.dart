@@ -36,7 +36,7 @@ void main() {
       sampleCount: 1,
       updatedAt: '2026-08-29T00:00:00.000Z',
     );
-    final matcher = SpeakerMatcher();
+    const matcher = SpeakerMatcher();
 
     expect(
         matcher.match(Float32List.fromList([0.9, 0.1]), [profile])?.profile.id,
