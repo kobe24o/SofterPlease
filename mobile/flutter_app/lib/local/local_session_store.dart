@@ -80,7 +80,8 @@ final class LocalSessionSummary {
       speakerLabel: json['speaker_label']?.toString() ?? '',
       utterances: (json['utterances'] as List<dynamic>? ?? const [])
           .whereType<Map>()
-          .map((item) => LocalUtterance.fromJson(Map<String, dynamic>.from(item)))
+          .map((item) =>
+              LocalUtterance.fromJson(Map<String, dynamic>.from(item)))
           .where((item) => item.id.isNotEmpty)
           .toList(growable: false),
     );
@@ -101,7 +102,8 @@ final class LocalSpeakerStore {
       if (decoded is! List) return const [];
       return decoded
           .whereType<Map>()
-          .map((item) => SpeakerProfile.fromJson(Map<String, dynamic>.from(item)))
+          .map((item) =>
+              SpeakerProfile.fromJson(Map<String, dynamic>.from(item)))
           .where((item) => item.id.isNotEmpty && item.centroid.isNotEmpty)
           .toList(growable: false);
     } on FormatException {

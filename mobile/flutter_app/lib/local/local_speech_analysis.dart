@@ -1,16 +1,27 @@
 import 'dart:io';
-import 'dart:math';
 import 'dart:typed_data';
 
 import 'package:sherpa_onnx/sherpa_onnx.dart';
 
+import 'conversation_models.dart';
 import 'model_pack.dart';
 
 final class LocalRecognitionResult {
-  const LocalRecognitionResult({required this.text, required this.emotion});
+  const LocalRecognitionResult({
+    required this.text,
+    required this.emotion,
+    this.startMilliseconds = 0,
+    this.endMilliseconds = 0,
+    this.sessionCluster = 0,
+    this.embedding,
+  });
 
   final String text;
   final String emotion;
+  final int startMilliseconds;
+  final int endMilliseconds;
+  final int sessionCluster;
+  final Float32List? embedding;
 }
 
 final class LocalSpeechAnalysis {
@@ -20,6 +31,7 @@ final class LocalSpeechAnalysis {
     required this.emotionValue,
     required this.speakerLabel,
     required this.speechSegmentCount,
+    required this.utterances,
   });
 
   final String transcript;
@@ -27,26 +39,50 @@ final class LocalSpeechAnalysis {
   final int emotionValue;
   final String speakerLabel;
   final int speechSegmentCount;
+  final List<LocalUtterance> utterances;
 
   factory LocalSpeechAnalysis.fromRecognitionResults(
     List<LocalRecognitionResult> results, {
     required int speakerCount,
   }) {
-    final transcript = results
-        .map((item) => item.text.trim())
+    final utterances = results.indexed.map((entry) {
+      final index = entry.$1;
+      final item = entry.$2;
+      final emotion = _emotionInfo(item.emotion);
+      final cluster = item.sessionCluster;
+      return LocalUtterance(
+        id: 'utterance-${index + 1}',
+        startMilliseconds: item.startMilliseconds,
+        endMilliseconds: item.endMilliseconds,
+        transcript: item.text.trim(),
+        rawEmotion: item.emotion,
+        emotionLabel: emotion.label,
+        emotionValue: emotion.value,
+        sessionCluster: cluster,
+        speakerLabel: cluster > 0 ? '待确认说话人 $cluster' : '未知说话人',
+        embedding: item.embedding,
+      );
+    }).toList(growable: false);
+    final transcript = utterances
+        .map((item) => item.transcript)
         .where((text) => text.isNotEmpty)
         .join('\n');
-    final labels = results
-        .map((item) => _emotionInfo(item.emotion))
-        .where((item) => item.label != '中性')
+    final emphasized = utterances
+        .where((item) => item.emotionLabel != '中性')
         .toList(growable: false);
-    final emotion = labels.isEmpty ? const _EmotionInfo('中性', 0) : labels.last;
+    final emotion = emphasized.isEmpty
+        ? const _EmotionInfo('中性', 0)
+        : _EmotionInfo(
+            emphasized.last.emotionLabel,
+            emphasized.last.emotionValue,
+          );
     return LocalSpeechAnalysis(
       transcript: transcript,
       emotionLabel: emotion.label,
       emotionValue: emotion.value,
       speakerLabel: speakerCount > 0 ? '检测到 $speakerCount 位说话人' : '未检测到可用声纹',
-      speechSegmentCount: results.length,
+      speechSegmentCount: utterances.length,
+      utterances: utterances,
     );
   }
 }
@@ -125,20 +161,28 @@ final class LocalSpeechAnalyzer {
             );
             recognizer.decode(stream);
             final result = recognizer.getResult(stream);
+            final embedding = _speakerEmbedding(
+              speakerExtractor,
+              segment.samples,
+              wave.sampleRate,
+            );
+            final cluster =
+                embedding == null ? 0 : _addToCluster(clusters, embedding);
             results.add(LocalRecognitionResult(
               text: result.text,
               emotion: result.emotion,
+              startMilliseconds:
+                  (segment.start * 1000 / wave.sampleRate).round(),
+              endMilliseconds: ((segment.start + segment.samples.length) *
+                      1000 /
+                      wave.sampleRate)
+                  .round(),
+              sessionCluster: cluster,
+              embedding: embedding,
             ));
           } finally {
             stream.free();
           }
-
-          final embedding = _speakerEmbedding(
-            speakerExtractor,
-            segment.samples,
-            wave.sampleRate,
-          );
-          if (embedding != null) _addToCluster(clusters, embedding);
         }
       }
 
@@ -183,14 +227,15 @@ final class LocalSpeechAnalyzer {
     }
   }
 
-  static void _addToCluster(
+  static int _addToCluster(
     List<_SpeakerCluster> clusters,
     Float32List embedding,
   ) {
     _SpeakerCluster? nearest;
     var nearestScore = -1.0;
     for (final cluster in clusters) {
-      final score = _cosineSimilarity(cluster.centroid, embedding);
+      final score =
+          SpeakerMatcher.cosineSimilarity(cluster.centroid, embedding);
       if (score > nearestScore) {
         nearest = cluster;
         nearestScore = score;
@@ -198,23 +243,10 @@ final class LocalSpeechAnalyzer {
     }
     if (nearest != null && nearestScore >= 0.60) {
       nearest.add(embedding);
-      return;
+      return clusters.indexOf(nearest) + 1;
     }
     clusters.add(_SpeakerCluster(embedding));
-  }
-
-  static double _cosineSimilarity(Float32List left, Float32List right) {
-    if (left.length != right.length || left.isEmpty) return -1;
-    var dot = 0.0;
-    var leftNorm = 0.0;
-    var rightNorm = 0.0;
-    for (var index = 0; index < left.length; index++) {
-      dot += left[index] * right[index];
-      leftNorm += left[index] * left[index];
-      rightNorm += right[index] * right[index];
-    }
-    if (leftNorm == 0 || rightNorm == 0) return -1;
-    return dot / (sqrt(leftNorm) * sqrt(rightNorm));
+    return clusters.length;
   }
 }
 

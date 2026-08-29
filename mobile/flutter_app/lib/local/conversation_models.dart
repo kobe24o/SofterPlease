@@ -32,47 +32,48 @@ final class LocalUtterance {
   LocalUtterance copyWith({
     String? speakerId,
     String? speakerLabel,
-  }) => LocalUtterance(
-    id: id,
-    startMilliseconds: startMilliseconds,
-    endMilliseconds: endMilliseconds,
-    transcript: transcript,
-    rawEmotion: rawEmotion,
-    emotionLabel: emotionLabel,
-    emotionValue: emotionValue,
-    speakerId: speakerId ?? this.speakerId,
-    speakerLabel: speakerLabel ?? this.speakerLabel,
-    sessionCluster: sessionCluster,
-    embedding: embedding == null ? null : Float32List.fromList(embedding!),
-  );
+  }) =>
+      LocalUtterance(
+        id: id,
+        startMilliseconds: startMilliseconds,
+        endMilliseconds: endMilliseconds,
+        transcript: transcript,
+        rawEmotion: rawEmotion,
+        emotionLabel: emotionLabel,
+        emotionValue: emotionValue,
+        speakerId: speakerId ?? this.speakerId,
+        speakerLabel: speakerLabel ?? this.speakerLabel,
+        sessionCluster: sessionCluster,
+        embedding: embedding == null ? null : Float32List.fromList(embedding!),
+      );
 
   Map<String, Object?> toJson() => {
-    'id': id,
-    'start_milliseconds': startMilliseconds,
-    'end_milliseconds': endMilliseconds,
-    'transcript': transcript,
-    'raw_emotion': rawEmotion,
-    'emotion_label': emotionLabel,
-    'emotion_value': emotionValue,
-    'speaker_id': speakerId,
-    'speaker_label': speakerLabel,
-    'session_cluster': sessionCluster,
-    'embedding': embedding == null ? null : _encodeEmbedding(embedding!),
-  };
+        'id': id,
+        'start_milliseconds': startMilliseconds,
+        'end_milliseconds': endMilliseconds,
+        'transcript': transcript,
+        'raw_emotion': rawEmotion,
+        'emotion_label': emotionLabel,
+        'emotion_value': emotionValue,
+        'speaker_id': speakerId,
+        'speaker_label': speakerLabel,
+        'session_cluster': sessionCluster,
+        'embedding': embedding == null ? null : _encodeEmbedding(embedding!),
+      };
 
   factory LocalUtterance.fromJson(Map<String, dynamic> json) => LocalUtterance(
-    id: json['id']?.toString() ?? '',
-    startMilliseconds: (json['start_milliseconds'] as num?)?.toInt() ?? 0,
-    endMilliseconds: (json['end_milliseconds'] as num?)?.toInt() ?? 0,
-    transcript: json['transcript']?.toString() ?? '',
-    rawEmotion: json['raw_emotion']?.toString() ?? '',
-    emotionLabel: json['emotion_label']?.toString() ?? '中性',
-    emotionValue: (json['emotion_value'] as num?)?.toInt() ?? 0,
-    speakerId: json['speaker_id']?.toString(),
-    speakerLabel: json['speaker_label']?.toString() ?? '未知说话人',
-    sessionCluster: (json['session_cluster'] as num?)?.toInt() ?? 0,
-    embedding: _decodeEmbedding(json['embedding']?.toString()),
-  );
+        id: json['id']?.toString() ?? '',
+        startMilliseconds: (json['start_milliseconds'] as num?)?.toInt() ?? 0,
+        endMilliseconds: (json['end_milliseconds'] as num?)?.toInt() ?? 0,
+        transcript: json['transcript']?.toString() ?? '',
+        rawEmotion: json['raw_emotion']?.toString() ?? '',
+        emotionLabel: json['emotion_label']?.toString() ?? '中性',
+        emotionValue: (json['emotion_value'] as num?)?.toInt() ?? 0,
+        speakerId: json['speaker_id']?.toString(),
+        speakerLabel: json['speaker_label']?.toString() ?? '未知说话人',
+        sessionCluster: (json['session_cluster'] as num?)?.toInt() ?? 0,
+        embedding: _decodeEmbedding(json['embedding']?.toString()),
+      );
 }
 
 final class SpeakerProfile {
@@ -91,36 +92,38 @@ final class SpeakerProfile {
   final String updatedAt;
 
   SpeakerProfile withSample(Float32List sample, DateTime now) => SpeakerProfile(
-    id: id,
-    name: name,
-    centroid: SpeakerMatcher.weightedCentroid(centroid, sample, sampleCount),
-    sampleCount: sampleCount + 1,
-    updatedAt: now.toUtc().toIso8601String(),
-  );
+        id: id,
+        name: name,
+        centroid:
+            SpeakerMatcher.weightedCentroid(centroid, sample, sampleCount),
+        sampleCount: sampleCount + 1,
+        updatedAt: now.toUtc().toIso8601String(),
+      );
 
   SpeakerProfile rename(String value) => SpeakerProfile(
-    id: id,
-    name: value,
-    centroid: Float32List.fromList(centroid),
-    sampleCount: sampleCount,
-    updatedAt: updatedAt,
-  );
+        id: id,
+        name: value,
+        centroid: Float32List.fromList(centroid),
+        sampleCount: sampleCount,
+        updatedAt: updatedAt,
+      );
 
   Map<String, Object> toJson() => {
-    'id': id,
-    'name': name,
-    'centroid': _encodeEmbedding(centroid),
-    'sample_count': sampleCount,
-    'updated_at': updatedAt,
-  };
+        'id': id,
+        'name': name,
+        'centroid': _encodeEmbedding(centroid),
+        'sample_count': sampleCount,
+        'updated_at': updatedAt,
+      };
 
   factory SpeakerProfile.fromJson(Map<String, dynamic> json) => SpeakerProfile(
-    id: json['id']?.toString() ?? '',
-    name: json['name']?.toString() ?? '未命名成员',
-    centroid: _decodeEmbedding(json['centroid']?.toString()) ?? Float32List(0),
-    sampleCount: (json['sample_count'] as num?)?.toInt() ?? 0,
-    updatedAt: json['updated_at']?.toString() ?? '',
-  );
+        id: json['id']?.toString() ?? '',
+        name: json['name']?.toString() ?? '未命名成员',
+        centroid:
+            _decodeEmbedding(json['centroid']?.toString()) ?? Float32List(0),
+        sampleCount: (json['sample_count'] as num?)?.toInt() ?? 0,
+        updatedAt: json['updated_at']?.toString() ?? '',
+      );
 }
 
 final class SpeakerMatch {
@@ -135,7 +138,8 @@ final class SpeakerMatcher {
 
   final double threshold;
 
-  SpeakerMatch? match(Float32List? embedding, Iterable<SpeakerProfile> profiles) {
+  SpeakerMatch? match(
+      Float32List? embedding, Iterable<SpeakerProfile> profiles) {
     if (embedding == null || embedding.isEmpty) return null;
     SpeakerMatch? nearest;
     for (final profile in profiles) {
@@ -158,8 +162,8 @@ final class SpeakerMatcher {
     }
     final next = Float32List(sample.length);
     for (var index = 0; index < next.length; index++) {
-      next[index] = (current[index] * sampleCount + sample[index]) /
-          (sampleCount + 1);
+      next[index] =
+          (current[index] * sampleCount + sample[index]) / (sampleCount + 1);
     }
     return next;
   }
@@ -179,8 +183,8 @@ final class SpeakerMatcher {
   }
 }
 
-String _encodeEmbedding(Float32List values) =>
-    base64Encode(values.buffer.asUint8List(values.offsetInBytes, values.lengthInBytes));
+String _encodeEmbedding(Float32List values) => base64Encode(
+    values.buffer.asUint8List(values.offsetInBytes, values.lengthInBytes));
 
 Float32List? _decodeEmbedding(String? encoded) {
   if (encoded == null || encoded.isEmpty) return null;

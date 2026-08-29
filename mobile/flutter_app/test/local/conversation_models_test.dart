@@ -4,9 +4,11 @@ import 'dart:typed_data';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:softerplease/local/local_session_store.dart';
 import 'package:softerplease/local/conversation_models.dart';
+import 'package:softerplease/local/local_speech_analysis.dart';
 
 void main() {
-  test('saving a local conversation keeps its utterances for correction', () async {
+  test('saving a local conversation keeps its utterances for correction',
+      () async {
     final storage = _MemoryStorage();
     final store = LocalSessionStore(storage);
 
@@ -25,7 +27,8 @@ void main() {
     expect(saved.single, containsPair('utterances', isA<List<dynamic>>()));
   });
 
-  test('matching and correcting a speaker updates only local centroid data', () {
+  test('matching and correcting a speaker updates only local centroid data',
+      () {
     final profile = SpeakerProfile(
       id: 'person-1',
       name: '妈妈',
@@ -35,7 +38,8 @@ void main() {
     );
     final matcher = SpeakerMatcher();
 
-    expect(matcher.match(Float32List.fromList([0.9, 0.1]), [profile])?.profile.id,
+    expect(
+        matcher.match(Float32List.fromList([0.9, 0.1]), [profile])?.profile.id,
         'person-1');
     expect(matcher.match(Float32List.fromList([0, 1]), [profile]), isNull);
 
@@ -46,6 +50,27 @@ void main() {
     expect(corrected.sampleCount, 2);
     expect(corrected.centroid[0], closeTo(0.9, 0.0001));
   });
+
+  test('local analysis retains ordered utterances for speaker correction', () {
+    final analysis = LocalSpeechAnalysis.fromRecognitionResults(
+      const [
+        LocalRecognitionResult(text: '我们慢慢说。', emotion: 'NEUTRAL'),
+        LocalRecognitionResult(text: '我愿意听。', emotion: 'HAPPY'),
+      ],
+      speakerCount: 1,
+    );
+
+    expect(_utterancesOf(analysis), hasLength(2));
+    expect(_utterancesOf(analysis).last.transcript, '我愿意听。');
+  });
+}
+
+List<dynamic> _utterancesOf(Object value) {
+  try {
+    return (value as dynamic).utterances as List<dynamic>;
+  } on NoSuchMethodError {
+    return const [];
+  }
 }
 
 final class _MemoryStorage implements LocalStringStorage {
