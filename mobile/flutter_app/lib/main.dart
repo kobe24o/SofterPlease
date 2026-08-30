@@ -13,6 +13,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import 'local/bundled_model_installer.dart';
 import 'local/conversation_models.dart';
+import 'local/context_blocks.dart';
 import 'local/daily_advice.dart';
 import 'local/local_session_store.dart';
 import 'local/local_speech_analysis.dart';
@@ -102,7 +103,7 @@ class _HomePageState extends State<_HomePage> {
   final _baseUrlController = TextEditingController();
   final _modelController = TextEditingController();
   final _apiKeyController = TextEditingController();
-  late final LlmReviewQueue _reviewQueue;
+  late final LlmContextBlockQueue _contextBlockQueue;
   Timer? _recordingTimer;
   StreamSubscription<Uint8List>? _recordingStreamSubscription;
   Completer<void>? _recordingStreamClosed;
@@ -118,6 +119,7 @@ class _HomePageState extends State<_HomePage> {
   UpdateCheckResult? _updateResult;
   PackageInfo? _packageInfo;
   String? _recordingGroupId;
+  DateTime? _recordingStartedAt;
   Directory? _recordingDirectory;
   String? _dailyAdvice;
   String _statusText = '正在准备本地模型…';
@@ -135,10 +137,10 @@ class _HomePageState extends State<_HomePage> {
   @override
   void initState() {
     super.initState();
-    _reviewQueue = LlmReviewQueue(
+    _contextBlockQueue = LlmContextBlockQueue(
       loadAll: _loadAllConversations,
       save: _saveConversation,
-      generate: _generateUtteranceScore,
+      generate: _generateContextBlockScore,
     );
     unawaited(_loadLocalState());
   }
@@ -148,7 +150,7 @@ class _HomePageState extends State<_HomePage> {
     _recordingTimer?.cancel();
     unawaited(_recordingStreamSubscription?.cancel());
     _streamingVad?.dispose();
-    _reviewQueue.dispose();
+    _contextBlockQueue.dispose();
     _recorder.dispose();
     _player.dispose();
     _baseUrlController.dispose();
@@ -198,7 +200,7 @@ class _HomePageState extends State<_HomePage> {
         });
       }
       unawaited(_installLocalModels());
-      if (apiKey?.isNotEmpty == true) unawaited(_reviewQueue.resume());
+      if (apiKey?.isNotEmpty == true) unawaited(_contextBlockQueue.resume());
     } catch (error) {
       if (mounted) {
         setState(() {
@@ -245,6 +247,7 @@ class _HomePageState extends State<_HomePage> {
           Directory('${root.path}${Platform.pathSeparator}recordings');
       await directory.create(recursive: true);
       final groupId = 'group_${DateTime.now().millisecondsSinceEpoch}';
+      _recordingStartedAt = DateTime.now().toUtc();
       final pack = _modelPack;
       _streamingVad?.dispose();
       _streamingVad = pack?.isInstalled == true
@@ -315,6 +318,8 @@ class _HomePageState extends State<_HomePage> {
           await _processPcmSegment(segment);
         }
       }
+      await _persistContextBlocks(recordingStopped: true);
+      await _enqueueContextBlocksIfConfigured(recordingStopped: true);
       if (mounted) {
         setState(() {
           _statusText = '本地分析完成；每段均已单独保存，可在对话页纠正说话人。';
@@ -328,6 +333,7 @@ class _HomePageState extends State<_HomePage> {
       _recordingStreamSubscription = null;
       _recordingStreamClosed = null;
       _segmentCoordinator = null;
+      _recordingStartedAt = null;
       _streamingVad?.dispose();
       _streamingVad = null;
       if (mounted) setState(() => _isAnalyzing = false);
@@ -362,14 +368,19 @@ class _HomePageState extends State<_HomePage> {
       await _saveConversation(_summaryFor(
         path,
         duration,
+        createdAt: (_recordingStartedAt ?? DateTime.now().toUtc())
+            .add(Duration(milliseconds: segment.startSample ~/ 16)),
         recordingGroupId: groupId,
       ));
+      await _persistContextBlocks(recordingStopped: false);
       return;
     }
     final analysis = await _analyzer.analyze(audioPath: path, modelPack: pack!);
     final conversation = _summaryFor(
       path,
       duration,
+      createdAt: (_recordingStartedAt ?? DateTime.now().toUtc())
+          .add(Duration(milliseconds: segment.startSample ~/ 16)),
       recordingGroupId: groupId,
       transcript: analysis.transcript,
       emotionValue: analysis.emotionValue,
@@ -379,7 +390,8 @@ class _HomePageState extends State<_HomePage> {
       utterances: _assignKnownSpeakers(analysis.utterances),
     );
     await _saveConversation(conversation);
-    unawaited(_enqueueReviewIfConfigured(conversation));
+    await _persistContextBlocks(recordingStopped: false);
+    unawaited(_enqueueContextBlocksIfConfigured());
     if (mounted) {
       setState(() {
         _statusText = '已完成 ${_formatDuration(duration)} 片段的本地分析；后续片段仍在继续。';
@@ -390,6 +402,7 @@ class _HomePageState extends State<_HomePage> {
   LocalSessionSummary _summaryFor(
     String path,
     int duration, {
+    DateTime? createdAt,
     String transcript = '',
     int emotionValue = 0,
     String emotionLabel = '',
@@ -400,7 +413,7 @@ class _HomePageState extends State<_HomePage> {
   }) =>
       LocalSessionSummary(
         id: 'local_${DateTime.now().millisecondsSinceEpoch}',
-        createdAt: DateTime.now().toUtc().toIso8601String(),
+        createdAt: (createdAt ?? DateTime.now().toUtc()).toIso8601String(),
         audioPath: path,
         durationSeconds: duration,
         transcript: transcript,
@@ -438,9 +451,20 @@ class _HomePageState extends State<_HomePage> {
     return LocalSessionStore(_SharedPreferencesStorage(preferences)).loadAll();
   }
 
-  Future<void> _enqueueReviewIfConfigured(
-    LocalSessionSummary conversation,
-  ) async {
+  Future<void> _persistContextBlocks({required bool recordingStopped}) async {
+    final preferences = _preferences ?? await SharedPreferences.getInstance();
+    final storage = _SharedPreferencesStorage(preferences);
+    final sessions = await LocalSessionStore(storage).loadAll();
+    final blocks = ContextBlockBuilder.build(
+      sessions,
+      recordingStopped: recordingStopped,
+    );
+    await ContextBlockStore(storage).saveAll(blocks);
+  }
+
+  Future<void> _enqueueContextBlocksIfConfigured({
+    bool recordingStopped = false,
+  }) async {
     final preferences = _preferences ?? await SharedPreferences.getInstance();
     final settingsStore = AdviceSettingsStore(
       _SharedPreferencesStorage(preferences),
@@ -448,12 +472,13 @@ class _HomePageState extends State<_HomePage> {
     );
     final key = await settingsStore.readApiKey();
     if (key?.trim().isEmpty ?? true) return;
-    await _reviewQueue.enqueueUtterances(conversation);
+    await _contextBlockQueue.enqueueAvailable(
+        recordingStopped: recordingStopped);
   }
 
-  Future<String> _generateUtteranceScore(
-    LocalSessionSummary conversation,
-    LocalUtterance utterance,
+  Future<String> _generateContextBlockScore(
+    ConversationContextBlock block,
+    List<LocalSessionSummary> conversations,
   ) async {
     final preferences = _preferences ?? await SharedPreferences.getInstance();
     final settingsStore = AdviceSettingsStore(
@@ -462,7 +487,7 @@ class _HomePageState extends State<_HomePage> {
     );
     final key = await settingsStore.readApiKey();
     return OpenAiCompatibleAdviceClient().generate(
-      request: UtteranceScoreRequest.forUtterance(utterance),
+      request: ContextBlockScoreRequest.forBlock(block, conversations),
       settings: _llmSettings,
       apiKey: key ?? '',
     );
@@ -497,7 +522,7 @@ class _HomePageState extends State<_HomePage> {
         clearLlmReview: true,
       );
       await _saveConversation(reanalyzed);
-      unawaited(_enqueueReviewIfConfigured(reanalyzed));
+      unawaited(_enqueueContextBlocksIfConfigured(recordingStopped: true));
       if (mounted) setState(() => _statusText = '重新本地分析完成。');
     } catch (error) {
       _showSnack('重新分析失败：${_message(error)}');
@@ -594,17 +619,32 @@ class _HomePageState extends State<_HomePage> {
     LocalUtterance utterance,
     SpeakerProfile profile,
   ) async {
-    final sample = utterance.embedding;
-    if (sample == null || sample.isEmpty) {
-      _showSnack('该片段没有可用声纹，无法用于学习');
+    await _correctSpeakers(conversation, [utterance], profile);
+  }
+
+  Future<void> _correctSpeakers(
+    LocalSessionSummary conversation,
+    List<LocalUtterance> utterances,
+    SpeakerProfile profile,
+  ) async {
+    final usable = utterances
+        .where((utterance) =>
+            utterance.embedding != null && utterance.embedding!.isNotEmpty)
+        .toList(growable: false);
+    if (usable.isEmpty) {
+      _showSnack('所选片段没有可用声纹，无法用于学习');
       return;
     }
     final preferences = _preferences ?? await SharedPreferences.getInstance();
-    final updatedProfile = profile.withSample(sample, DateTime.now());
+    var updatedProfile = profile;
+    for (final item in usable) {
+      updatedProfile =
+          updatedProfile.withSample(item.embedding!, DateTime.now());
+    }
     await LocalSpeakerStore(_SharedPreferencesStorage(preferences))
         .save(updatedProfile);
     final updatedUtterances = conversation.utterances
-        .map((item) => item.id == utterance.id
+        .map((item) => usable.any((selected) => selected.id == item.id)
             ? item.copyWith(
                 speakerId: updatedProfile.id,
                 speakerLabel: updatedProfile.name,
@@ -613,13 +653,15 @@ class _HomePageState extends State<_HomePage> {
         .toList(growable: false);
     await _saveConversation(
         conversation.copyWith(utterances: updatedUtterances));
+    await _persistContextBlocks(recordingStopped: !_isRecording);
     final profiles =
         await LocalSpeakerStore(_SharedPreferencesStorage(preferences))
             .loadAll();
     if (mounted) {
       setState(() {
         _profiles = profiles;
-        _statusText = '已更正为“${updatedProfile.name}”，本地声纹特征已自动更新。';
+        _statusText =
+            '已将 ${usable.length} 条片段确认给“${updatedProfile.name}”，本地声纹特征已更新。';
       });
     }
   }
@@ -736,7 +778,7 @@ class _HomePageState extends State<_HomePage> {
         _apiKeyController.clear();
       });
     }
-    if (_hasStoredApiKey) unawaited(_reviewQueue.resume());
+    if (_hasStoredApiKey) unawaited(_contextBlockQueue.resume());
     _showSnack('模型设置已保存在本机；Key 已进入系统安全存储。');
   }
 
@@ -803,6 +845,7 @@ class _HomePageState extends State<_HomePage> {
     return switch (review?.status) {
       LlmSegmentReview.retryWaiting => '评分将自动重试',
       LlmSegmentReview.queued => '评分排队中',
+      LlmSegmentReview.unscored => '模型未返回评分',
       _ => '等待评分',
     };
   }
@@ -1048,73 +1091,144 @@ class _HomePageState extends State<_HomePage> {
       showModalBottomSheet<void>(
         context: context,
         isScrollControlled: true,
-        builder: (sheetContext) => DraggableScrollableSheet(
-          expand: false,
-          initialChildSize: 0.82,
-          builder: (_, controller) => ListView(
-            controller: controller,
-            padding: const EdgeInsets.fromLTRB(20, 20, 20, 36),
-            children: [
-              Text(_formatDate(conversation.createdAt),
-                  style: Theme.of(context).textTheme.titleLarge),
-              const SizedBox(height: 6),
-              const Text('声音情绪在本机完成；大模型复核会自动串行发送转写文本。点击每句可纠正说话人。'),
-              const SizedBox(height: 16),
-              if (conversation.utterances.isEmpty)
-                const _EmptyState(
-                    icon: Icons.auto_awesome, text: '暂无逐段结果，可返回后重新本地分析。')
-              else
-                for (final utterance in conversation.utterances) ...[
-                  _SectionCard(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
+        builder: (sheetContext) {
+          final selected = <String>{};
+          final utterancesById = <String, LocalUtterance>{
+            for (final item in conversation.utterances) item.id: item,
+          };
+          final contextBlocks = ContextBlockBuilder.build(
+            [conversation],
+            recordingStopped: true,
+          );
+          final groupedUtterances = contextBlocks
+              .map((block) => block.utteranceRefs
+                  .map((ref) => utterancesById[ref.utteranceId])
+                  .whereType<LocalUtterance>()
+                  .toList(growable: false))
+              .where((items) => items.isNotEmpty)
+              .toList();
+          if (groupedUtterances.isEmpty && conversation.utterances.isNotEmpty) {
+            groupedUtterances.add(conversation.utterances);
+          }
+          return StatefulBuilder(
+              builder: (context, setSheetState) => DraggableScrollableSheet(
+                    expand: false,
+                    initialChildSize: 0.82,
+                    builder: (_, controller) => ListView(
+                      controller: controller,
+                      padding: const EdgeInsets.fromLTRB(20, 20, 20, 36),
                       children: [
-                        ListTile(
-                          contentPadding: const EdgeInsets.symmetric(
-                              horizontal: 14, vertical: 4),
-                          leading: CircleAvatar(
-                              child: Text(
-                                  utterance.speakerLabel.characters.first)),
-                          title: Text(utterance.speakerLabel),
-                          subtitle: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text(utterance.transcript),
-                              const SizedBox(height: 2),
-                              Text(
-                                '${_scoreLabel(utterance.llmReview)} · ${_formatDuration(utterance.startMilliseconds ~/ 1000)}',
-                                style: TextStyle(
-                                  color: _scoreColor(utterance.llmReview),
-                                  fontWeight: FontWeight.w700,
-                                ),
+                        Text(_formatDate(conversation.createdAt),
+                            style: Theme.of(context).textTheme.titleLarge),
+                        const SizedBox(height: 6),
+                        const Text('声音情绪在本机完成；大模型复核会自动串行发送转写文本。点击每句可纠正说话人。'),
+                        const SizedBox(height: 16),
+                        if (conversation.utterances.isNotEmpty)
+                          _SectionCard(
+                              child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                Text(selected.isEmpty
+                                    ? '勾选多句后可一次确认说话人'
+                                    : '已选择 ${selected.length} 句'),
+                                if (selected.isNotEmpty)
+                                  Wrap(
+                                      spacing: 8,
+                                      children: _profiles
+                                          .map((profile) => FilledButton.tonal(
+                                              onPressed: () async {
+                                                await _correctSpeakers(
+                                                    conversation,
+                                                    conversation.utterances
+                                                        .where((item) =>
+                                                            selected.contains(
+                                                                item.id))
+                                                        .toList(
+                                                            growable: false),
+                                                    profile);
+                                                setSheetState(selected.clear);
+                                              },
+                                              child:
+                                                  Text('确认给 ${profile.name}')))
+                                          .toList(growable: false)),
+                              ])),
+                        if (conversation.utterances.isNotEmpty)
+                          const SizedBox(height: 12),
+                        if (conversation.utterances.isEmpty)
+                          const _EmptyState(
+                              icon: Icons.auto_awesome,
+                              text: '暂无逐段结果，可返回后重新本地分析。')
+                        else
+                          for (final blockItems in groupedUtterances) ...[
+                            _SectionCard(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Padding(
+                                    padding: const EdgeInsets.fromLTRB(
+                                        14, 12, 14, 4),
+                                    child: Text(
+                                      '同一语境 · ${blockItems.length} 句',
+                                      style: const TextStyle(
+                                          fontWeight: FontWeight.w700),
+                                    ),
+                                  ),
+                                  for (final utterance in blockItems) ...[
+                                    ListTile(
+                                      contentPadding:
+                                          const EdgeInsets.symmetric(
+                                              horizontal: 14, vertical: 4),
+                                      leading: Checkbox(
+                                        value: selected.contains(utterance.id),
+                                        onChanged: (_) => setSheetState(() =>
+                                            selected.contains(utterance.id)
+                                                ? selected.remove(utterance.id)
+                                                : selected.add(utterance.id)),
+                                      ),
+                                      title: Text(utterance.speakerLabel),
+                                      subtitle: Column(
+                                        crossAxisAlignment:
+                                            CrossAxisAlignment.start,
+                                        children: [
+                                          Text(utterance.transcript),
+                                          const SizedBox(height: 2),
+                                          Text(
+                                            '${_scoreLabel(utterance.llmReview)} · ${_formatDuration(utterance.startMilliseconds ~/ 1000)}',
+                                            style: TextStyle(
+                                              color: _scoreColor(
+                                                  utterance.llmReview),
+                                              fontWeight: FontWeight.w700,
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                      isThreeLine: true,
+                                      trailing: const Icon(Icons.edit_outlined),
+                                      onTap: () => _showCorrectionSheet(
+                                          conversation, utterance),
+                                    ),
+                                    if (utterance.llmReview?.markdown != null)
+                                      Padding(
+                                        padding: const EdgeInsets.fromLTRB(
+                                            14, 0, 14, 12),
+                                        child: MarkdownBody(
+                                          data: utterance.llmReview!.markdown!,
+                                          selectable: true,
+                                          styleSheet:
+                                              MarkdownStyleSheet.fromTheme(
+                                                  Theme.of(context)),
+                                        ),
+                                      ),
+                                  ],
+                                ],
                               ),
-                            ],
-                          ),
-                          isThreeLine: true,
-                          trailing: const Icon(Icons.edit_outlined),
-                          onTap: () =>
-                              _showCorrectionSheet(conversation, utterance),
-                        ),
-                        if (utterance.llmReview?.markdown != null) ...[
-                          const Divider(height: 1),
-                          Padding(
-                            padding: const EdgeInsets.fromLTRB(14, 8, 14, 12),
-                            child: MarkdownBody(
-                              data: utterance.llmReview!.markdown!,
-                              selectable: true,
-                              styleSheet: MarkdownStyleSheet.fromTheme(
-                                  Theme.of(context)),
                             ),
-                          ),
-                        ],
+                            const SizedBox(height: 10),
+                          ],
                       ],
                     ),
-                  ),
-                  const SizedBox(height: 10),
-                ],
-            ],
-          ),
-        ),
+                  ));
+        },
       );
 
   Widget _familyPage() => ListView(

@@ -15,6 +15,7 @@ final class LlmReview {
   static const queued = 'queued';
   static const retryWaiting = 'retry_waiting';
   static const completed = 'completed';
+  static const unscored = 'unscored';
 
   final String status;
   final int attempts;
@@ -58,6 +59,7 @@ final class LlmSegmentReview {
   static const queued = 'queued';
   static const retryWaiting = 'retry_waiting';
   static const completed = 'completed';
+  static const unscored = 'unscored';
 
   final String status;
   final int attempts;

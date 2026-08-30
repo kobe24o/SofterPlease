@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:dio/dio.dart';
 
 import 'conversation_models.dart';
+import 'context_blocks.dart';
 import 'local_session_store.dart';
 
 abstract interface class LlmPromptRequest {
@@ -171,6 +172,110 @@ final class UtteranceScoreResponse {
       rethrow;
     } catch (_) {
       throw const FormatException('评分响应不是有效 JSON');
+    }
+  }
+}
+
+final class ContextBlockScoreRequest implements LlmPromptRequest {
+  const ContextBlockScoreRequest._({
+    required this.block,
+    required this.entries,
+  });
+
+  final ConversationContextBlock block;
+  final List<ContextBlockScoreEntry> entries;
+
+  @override
+  String get transcript => entries
+      .map((entry) => '${entry.key} ${entry.speaker}：${entry.transcript}')
+      .join('\n');
+
+  factory ContextBlockScoreRequest.forBlock(
+    ConversationContextBlock block,
+    Iterable<LocalSessionSummary> conversations,
+  ) {
+    final byKey = <String, LocalUtterance>{};
+    final labels = <String, String>{};
+    for (final conversation in conversations) {
+      for (final utterance in conversation.utterances) {
+        byKey['${conversation.id}/${utterance.id}'] = utterance;
+        labels['${conversation.id}/${utterance.id}'] =
+            utterance.speakerLabel.ifEmpty('未知说话人');
+      }
+    }
+    final entries = <ContextBlockScoreEntry>[];
+    for (final ref in block.utteranceRefs) {
+      final key = '${ref.sessionId}/${ref.utteranceId}';
+      final utterance = byKey[key];
+      if (utterance == null || utterance.transcript.trim().isEmpty) continue;
+      entries.add(ContextBlockScoreEntry(
+        key: key,
+        speaker: labels[key] ?? '未知说话人',
+        transcript: utterance.transcript.trim(),
+      ));
+    }
+    return ContextBlockScoreRequest._(block: block, entries: entries);
+  }
+
+  @override
+  List<Map<String, String>> messages() => [
+        {
+          'role': 'system',
+          'content': '你是家庭沟通教练。根据一个连续语境判断每句话对家庭沟通的影响。'
+              '不要诊断人格或心理疾病。只输出 JSON 对象，不要代码块或额外文字：'
+              '{"markdown":"手机友好的 Markdown 总结", "scores": '
+              '{"sessionId/utteranceId":{"score":整数,"markdown":"简短依据"}}}。'
+              '每个输入句子都必须有对应 scores；score 必须为 -100 到 100 的整数，'
+              '不友善、攻击、伤害性表达为负，尊重、倾听、支持性表达为正。',
+        },
+        {
+          'role': 'user',
+          'content': '请按句子 key 返回评分，保持上下文一致：\n$transcript',
+        },
+      ];
+}
+
+final class ContextBlockScoreEntry {
+  const ContextBlockScoreEntry({
+    required this.key,
+    required this.speaker,
+    required this.transcript,
+  });
+
+  final String key;
+  final String speaker;
+  final String transcript;
+}
+
+final class ContextBlockScoreResponse {
+  const ContextBlockScoreResponse(
+      {required this.markdown, required this.scores});
+
+  final String markdown;
+  final Map<String, UtteranceScoreResponse> scores;
+
+  factory ContextBlockScoreResponse.parse(String value) {
+    try {
+      final decoded = jsonDecode(value);
+      if (decoded is! Map) throw const FormatException('语境评分响应不是对象');
+      final markdown = decoded['markdown']?.toString().trim() ?? '';
+      final rawScores = decoded['scores'];
+      if (markdown.isEmpty || rawScores is! Map) {
+        throw const FormatException('语境评分响应缺少内容');
+      }
+      final scores = <String, UtteranceScoreResponse>{};
+      for (final entry in rawScores.entries) {
+        if (entry.key is! String || entry.value is! Map) continue;
+        final item = Map<String, dynamic>.from(entry.value as Map);
+        scores[entry.key as String] =
+            UtteranceScoreResponse.parse(jsonEncode(item));
+      }
+      if (scores.isEmpty) throw const FormatException('语境评分为空');
+      return ContextBlockScoreResponse(markdown: markdown, scores: scores);
+    } on FormatException {
+      rethrow;
+    } catch (_) {
+      throw const FormatException('语境评分响应不是有效 JSON');
     }
   }
 }
