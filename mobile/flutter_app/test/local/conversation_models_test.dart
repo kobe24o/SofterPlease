@@ -27,6 +27,49 @@ void main() {
     expect(saved.single, containsPair('utterances', isA<List<dynamic>>()));
   });
 
+  test('conversation JSON reserves local LLM review state', () async {
+    final storage = _MemoryStorage();
+    final store = LocalSessionStore(storage);
+
+    await store.save(const LocalSessionSummary(
+      id: 'conversation-review',
+      createdAt: '2026-08-30T09:00:00.000Z',
+      audioPath: '/local/conversation-review.wav',
+      durationSeconds: 12,
+      transcript: '我不想再听了。',
+      emotionValue: 0,
+    ));
+
+    final saved = jsonDecode(storage.values['local_session_summaries_v1']!)
+        as List<dynamic>;
+    expect(saved.single, containsPair('llm_review', isNull));
+  });
+
+  test('deleting selected recordings preserves other local records', () async {
+    final storage = _MemoryStorage();
+    final store = LocalSessionStore(storage);
+    await store.save(const LocalSessionSummary(
+      id: 'keep',
+      createdAt: '2026-08-30T09:00:00.000Z',
+      audioPath: '/local/keep.wav',
+      durationSeconds: 12,
+      transcript: '保留这一条。',
+      emotionValue: 0,
+    ));
+    await store.save(const LocalSessionSummary(
+      id: 'remove',
+      createdAt: '2026-08-29T09:00:00.000Z',
+      audioPath: '/local/remove.wav',
+      durationSeconds: 12,
+      transcript: '删除这一条。',
+      emotionValue: 0,
+    ));
+
+    await store.deleteByIds(['remove']);
+
+    expect((await store.loadAll()).map((item) => item.id), ['keep']);
+  });
+
   test('matching and correcting a speaker updates only local centroid data',
       () {
     final profile = SpeakerProfile(

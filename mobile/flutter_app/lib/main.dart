@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:audioplayers/audioplayers.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:path_provider/path_provider.dart';
@@ -14,6 +15,7 @@ import 'local/conversation_models.dart';
 import 'local/daily_advice.dart';
 import 'local/local_session_store.dart';
 import 'local/local_speech_analysis.dart';
+import 'local/llm_review_queue.dart';
 import 'local/model_pack.dart';
 import 'update/android_update_bridge.dart';
 import 'update/update_manifest.dart';
@@ -96,6 +98,7 @@ class _HomePageState extends State<_HomePage> {
   final _baseUrlController = TextEditingController();
   final _modelController = TextEditingController();
   final _apiKeyController = TextEditingController();
+  late final LlmReviewQueue _reviewQueue;
   Timer? _recordingTimer;
 
   SharedPreferences? _preferences;
@@ -121,12 +124,18 @@ class _HomePageState extends State<_HomePage> {
   @override
   void initState() {
     super.initState();
+    _reviewQueue = LlmReviewQueue(
+      loadAll: _loadAllConversations,
+      save: _saveConversation,
+      generate: _generateConversationReview,
+    );
     unawaited(_loadLocalState());
   }
 
   @override
   void dispose() {
     _recordingTimer?.cancel();
+    _reviewQueue.dispose();
     _recorder.dispose();
     _player.dispose();
     _baseUrlController.dispose();
@@ -176,6 +185,7 @@ class _HomePageState extends State<_HomePage> {
         });
       }
       unawaited(_installLocalModels());
+      if (apiKey?.isNotEmpty == true) unawaited(_reviewQueue.resume());
     } catch (error) {
       if (mounted) {
         setState(() {
@@ -276,18 +286,18 @@ class _HomePageState extends State<_HomePage> {
       final analysis =
           await _analyzer.analyze(audioPath: path, modelPack: pack!);
       final utterances = _assignKnownSpeakers(analysis.utterances);
-      await _saveConversation(
-        _summaryFor(
-          path,
-          duration.round(),
-          transcript: analysis.transcript,
-          emotionValue: analysis.emotionValue,
-          emotionLabel: analysis.emotionLabel,
-          speakerLabel: analysis.speakerLabel,
-          analysisState: 'completed',
-          utterances: utterances,
-        ),
+      final conversation = _summaryFor(
+        path,
+        duration.round(),
+        transcript: analysis.transcript,
+        emotionValue: analysis.emotionValue,
+        emotionLabel: analysis.emotionLabel,
+        speakerLabel: analysis.speakerLabel,
+        analysisState: 'completed',
+        utterances: utterances,
       );
+      await _saveConversation(conversation);
+      unawaited(_enqueueReviewIfConfigured(conversation));
       if (mounted) {
         setState(() {
           _statusText = '本地分析完成：${analysis.speechSegmentCount} 段语音，'
@@ -342,10 +352,42 @@ class _HomePageState extends State<_HomePage> {
     final preferences = _preferences ?? await SharedPreferences.getInstance();
     await LocalSessionStore(_SharedPreferencesStorage(preferences))
         .save(conversation);
-    final saved =
-        await LocalSessionStore(_SharedPreferencesStorage(preferences))
-            .loadAll();
+    final saved = await _loadAllConversations();
     if (mounted) setState(() => _conversations = saved);
+  }
+
+  Future<List<LocalSessionSummary>> _loadAllConversations() async {
+    final preferences = _preferences ?? await SharedPreferences.getInstance();
+    return LocalSessionStore(_SharedPreferencesStorage(preferences)).loadAll();
+  }
+
+  Future<void> _enqueueReviewIfConfigured(
+    LocalSessionSummary conversation,
+  ) async {
+    final preferences = _preferences ?? await SharedPreferences.getInstance();
+    final settingsStore = AdviceSettingsStore(
+      _SharedPreferencesStorage(preferences),
+      _FlutterSecureTextStorage(_secureStorage),
+    );
+    final key = await settingsStore.readApiKey();
+    if (key?.trim().isEmpty ?? true) return;
+    await _reviewQueue.enqueue(conversation);
+  }
+
+  Future<String> _generateConversationReview(
+    LocalSessionSummary conversation,
+  ) async {
+    final preferences = _preferences ?? await SharedPreferences.getInstance();
+    final settingsStore = AdviceSettingsStore(
+      _SharedPreferencesStorage(preferences),
+      _FlutterSecureTextStorage(_secureStorage),
+    );
+    final key = await settingsStore.readApiKey();
+    return OpenAiCompatibleAdviceClient().generate(
+      request: ConversationReviewRequest.forConversation(conversation),
+      settings: _llmSettings,
+      apiKey: key ?? '',
+    );
   }
 
   Future<void> _reanalyze(LocalSessionSummary conversation) async {
@@ -367,14 +409,17 @@ class _HomePageState extends State<_HomePage> {
         audioPath: conversation.audioPath,
         modelPack: pack!,
       );
-      await _saveConversation(conversation.copyWith(
+      final reanalyzed = conversation.copyWith(
         transcript: analysis.transcript,
         emotionValue: analysis.emotionValue,
         emotionLabel: analysis.emotionLabel,
         speakerLabel: analysis.speakerLabel,
         analysisState: 'completed',
         utterances: _assignKnownSpeakers(analysis.utterances),
-      ));
+        clearLlmReview: true,
+      );
+      await _saveConversation(reanalyzed);
+      unawaited(_enqueueReviewIfConfigured(reanalyzed));
       if (mounted) setState(() => _statusText = '重新本地分析完成。');
     } catch (error) {
       _showSnack('重新分析失败：${_message(error)}');
@@ -394,6 +439,76 @@ class _HomePageState extends State<_HomePage> {
     } catch (error) {
       _showSnack('播放失败：${_message(error)}');
     }
+  }
+
+  Future<void> _deleteConversations(
+    List<LocalSessionSummary> conversations, {
+    required String title,
+  }) async {
+    if (conversations.isEmpty) {
+      _showSnack('没有符合条件的本地录音');
+      return;
+    }
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: Text(title),
+        content:
+            Text('将删除 ${conversations.length} 条本地录音及其转写、声纹和大模型复核结果。此操作无法恢复。'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('删除'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    final deletedIds = <String>[];
+    for (final conversation in conversations) {
+      try {
+        final file = File(conversation.audioPath);
+        if (await file.exists()) await file.delete();
+        deletedIds.add(conversation.id);
+      } catch (_) {
+        // Keep the metadata when the user-visible recording could not be removed.
+      }
+    }
+    if (deletedIds.isNotEmpty) {
+      final preferences = _preferences ?? await SharedPreferences.getInstance();
+      await LocalSessionStore(_SharedPreferencesStorage(preferences))
+          .deleteByIds(deletedIds);
+      final remaining = await _loadAllConversations();
+      if (mounted) setState(() => _conversations = remaining);
+    }
+    _showSnack('已删除 ${deletedIds.length} 条本地录音。');
+  }
+
+  Future<void> _deleteByRetention(_RetentionDelete selection) async {
+    final now = DateTime.now();
+    final cutoff = switch (selection) {
+      _RetentionDelete.thirtyDays => now.subtract(const Duration(days: 30)),
+      _RetentionDelete.halfYear => DateTime(now.year, now.month - 6, now.day),
+      _RetentionDelete.oneYear => DateTime(now.year - 1, now.month, now.day),
+      _RetentionDelete.all => null,
+    };
+    final targets = cutoff == null
+        ? _conversations
+        : _conversations.where((conversation) {
+            final createdAt = DateTime.tryParse(conversation.createdAt);
+            return createdAt != null && createdAt.isBefore(cutoff);
+          }).toList(growable: false);
+    final title = switch (selection) {
+      _RetentionDelete.thirtyDays => '删除 30 天前的录音',
+      _RetentionDelete.halfYear => '删除半年前的录音',
+      _RetentionDelete.oneYear => '删除一年前的录音',
+      _RetentionDelete.all => '删除全部本地录音',
+    };
+    await _deleteConversations(targets, title: title);
   }
 
   Future<void> _correctSpeaker(
@@ -543,6 +658,7 @@ class _HomePageState extends State<_HomePage> {
         _apiKeyController.clear();
       });
     }
+    if (_hasStoredApiKey) unawaited(_reviewQueue.resume());
     _showSnack('模型设置已保存在本机；Key 已进入系统安全存储。');
   }
 
@@ -725,7 +841,49 @@ class _HomePageState extends State<_HomePage> {
   Widget _conversationPage() => ListView(
         padding: const EdgeInsets.fromLTRB(20, 18, 20, 32),
         children: [
-          Text('本地对话', style: Theme.of(context).textTheme.headlineSmall),
+          Row(
+            children: [
+              Expanded(
+                child: Text('本地对话',
+                    style: Theme.of(context).textTheme.headlineSmall),
+              ),
+              PopupMenuButton<_RetentionDelete>(
+                tooltip: '清理本地录音',
+                onSelected: (selection) =>
+                    unawaited(_deleteByRetention(selection)),
+                child: const Padding(
+                  padding: EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(Icons.delete_sweep_outlined, size: 18),
+                      SizedBox(width: 4),
+                      Text('清理录音'),
+                    ],
+                  ),
+                ),
+                itemBuilder: (_) => const [
+                  PopupMenuItem(
+                    value: _RetentionDelete.thirtyDays,
+                    child: Text('删除 30 天前的录音'),
+                  ),
+                  PopupMenuItem(
+                    value: _RetentionDelete.halfYear,
+                    child: Text('删除半年前的录音'),
+                  ),
+                  PopupMenuItem(
+                    value: _RetentionDelete.oneYear,
+                    child: Text('删除一年前的录音'),
+                  ),
+                  PopupMenuDivider(),
+                  PopupMenuItem(
+                    value: _RetentionDelete.all,
+                    child: Text('删除全部录音'),
+                  ),
+                ],
+              ),
+            ],
+          ),
           const SizedBox(height: 6),
           const Text('点开记录即可查看每句话、情绪标签，并纠正说话人。'),
           const SizedBox(height: 16),
@@ -779,6 +937,13 @@ class _HomePageState extends State<_HomePage> {
                                     : () => _reanalyze(conversation),
                                 icon: const Icon(Icons.auto_awesome),
                                 tooltip: '重新本地分析'),
+                            IconButton(
+                                onPressed: () => _deleteConversations(
+                                      [conversation],
+                                      title: '删除这条录音',
+                                    ),
+                                icon: const Icon(Icons.delete_outline),
+                                tooltip: '删除本地录音'),
                           ],
                         ),
                       ],
@@ -805,8 +970,12 @@ class _HomePageState extends State<_HomePage> {
               Text(_formatDate(conversation.createdAt),
                   style: Theme.of(context).textTheme.titleLarge),
               const SizedBox(height: 6),
-              const Text('所有内容与声纹均在本机；点击每句可纠正说话人。'),
+              const Text('声音情绪在本机完成；大模型复核会自动串行发送转写文本。点击每句可纠正说话人。'),
               const SizedBox(height: 16),
+              if (conversation.llmReview != null) ...[
+                _LlmReviewPanel(review: conversation.llmReview!),
+                const SizedBox(height: 12),
+              ],
               if (conversation.utterances.isEmpty)
                 const _EmptyState(
                     icon: Icons.auto_awesome, text: '暂无逐段结果，可返回后重新本地分析。')
@@ -839,7 +1008,7 @@ class _HomePageState extends State<_HomePage> {
         children: [
           Text('家庭', style: Theme.of(context).textTheme.headlineSmall),
           const SizedBox(height: 6),
-          const Text('成员声纹在本机持续学习；每日建议只在你点击时发送给自己的模型。'),
+          const Text('成员声纹在本机持续学习；新对话会按顺序自动发送转写文本做表达风险复核。'),
           const SizedBox(height: 16),
           _SectionCard(
             child: Column(
@@ -873,7 +1042,11 @@ class _HomePageState extends State<_HomePage> {
                 const Text('仅当你点击生成时，才会把今天的本地转写发送给下方配置的模型服务。'),
                 const SizedBox(height: 12),
                 if (_dailyAdvice != null)
-                  Text(_dailyAdvice!)
+                  MarkdownBody(
+                    data: _dailyAdvice!,
+                    selectable: true,
+                    styleSheet: MarkdownStyleSheet.fromTheme(Theme.of(context)),
+                  )
                 else
                   const Text('今天尚未生成建议。'),
                 const SizedBox(height: 12),
@@ -898,12 +1071,12 @@ class _HomePageState extends State<_HomePage> {
                     keyboardType: TextInputType.url,
                     decoration: const InputDecoration(
                         labelText: 'HTTPS Base URL',
-                        hintText: 'https://api.openai.com/v1')),
+                        hintText: 'https://apihub.agnes-ai.com/v1')),
                 const SizedBox(height: 10),
                 TextField(
                     controller: _modelController,
                     decoration: const InputDecoration(
-                        labelText: '模型名', hintText: 'gpt-4o-mini')),
+                        labelText: '模型名', hintText: 'agnes-2.5-flash')),
                 const SizedBox(height: 10),
                 TextField(
                   controller: _apiKeyController,
@@ -990,6 +1163,49 @@ class _EmptyState extends StatelessWidget {
       );
 }
 
+class _LlmReviewPanel extends StatelessWidget {
+  const _LlmReviewPanel({required this.review});
+
+  final LlmReview review;
+
+  @override
+  Widget build(BuildContext context) {
+    final status = switch (review.status) {
+      LlmReview.completed => '大模型复核完成',
+      LlmReview.retryWaiting => '复核失败，正在退避重试',
+      _ => '正在排队等待大模型复核',
+    };
+    return _SectionCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Icon(Icons.auto_awesome_outlined),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(status,
+                    style: const TextStyle(fontWeight: FontWeight.w700)),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          if (review.content != null)
+            MarkdownBody(
+              data: review.content!,
+              selectable: true,
+              styleSheet: MarkdownStyleSheet.fromTheme(Theme.of(context)),
+            )
+          else
+            Text(review.lastError == null
+                ? '请求将按顺序发送，避免超过模型服务限流。'
+                : '上次失败：${review.lastError}'),
+        ],
+      ),
+    );
+  }
+}
+
 class _EmotionChip extends StatelessWidget {
   const _EmotionChip({required this.label});
 
@@ -1010,3 +1226,5 @@ class _EmotionChip extends StatelessWidget {
     );
   }
 }
+
+enum _RetentionDelete { thirtyDays, halfYear, oneYear, all }

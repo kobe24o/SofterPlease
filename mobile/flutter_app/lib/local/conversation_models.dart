@@ -2,6 +2,48 @@ import 'dart:convert';
 import 'dart:math';
 import 'dart:typed_data';
 
+final class LlmReview {
+  const LlmReview({
+    required this.status,
+    required this.attempts,
+    required this.updatedAt,
+    this.content,
+    this.nextRetryAt,
+    this.lastError,
+  });
+
+  static const queued = 'queued';
+  static const retryWaiting = 'retry_waiting';
+  static const completed = 'completed';
+
+  final String status;
+  final int attempts;
+  final String updatedAt;
+  final String? content;
+  final String? nextRetryAt;
+  final String? lastError;
+
+  bool get isPending => status == queued || status == retryWaiting;
+
+  Map<String, Object?> toJson() => {
+        'status': status,
+        'attempts': attempts,
+        'updated_at': updatedAt,
+        'content': content,
+        'next_retry_at': nextRetryAt,
+        'last_error': lastError,
+      };
+
+  factory LlmReview.fromJson(Map<String, dynamic> json) => LlmReview(
+        status: json['status']?.toString() ?? queued,
+        attempts: (json['attempts'] as num?)?.toInt() ?? 0,
+        updatedAt: json['updated_at']?.toString() ?? '',
+        content: json['content']?.toString(),
+        nextRetryAt: json['next_retry_at']?.toString(),
+        lastError: json['last_error']?.toString(),
+      );
+}
+
 final class LocalUtterance {
   const LocalUtterance({
     required this.id,

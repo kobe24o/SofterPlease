@@ -4,7 +4,12 @@ import 'package:dio/dio.dart';
 
 import 'local_session_store.dart';
 
-final class DailyAdviceRequest {
+abstract interface class LlmPromptRequest {
+  String get transcript;
+  List<Map<String, String>> messages();
+}
+
+final class DailyAdviceRequest implements LlmPromptRequest {
   const DailyAdviceRequest._({
     required this.day,
     required this.transcript,
@@ -12,6 +17,7 @@ final class DailyAdviceRequest {
   });
 
   final DateTime day;
+  @override
   final String transcript;
   final List<String> conversationIds;
 
@@ -49,16 +55,57 @@ final class DailyAdviceRequest {
     );
   }
 
+  @override
   List<Map<String, String>> messages() => [
         {
           'role': 'system',
           'content': '你是一位重视尊重、倾听和非暴力沟通的家庭沟通教练。'
               '请根据当天对话，给出简短、具体、不过度诊断的中文建议。'
-              '不要复述隐私内容，不要把情绪标签当作医学结论。',
+              '不要复述隐私内容，不要把情绪标签当作医学结论。'
+              '请用简洁、手机友好的 Markdown 输出。',
         },
         {
           'role': 'user',
           'content': '以下是今天在本机整理的对话：\n$transcript',
+        },
+      ];
+}
+
+final class ConversationReviewRequest implements LlmPromptRequest {
+  const ConversationReviewRequest._(this.transcript);
+
+  @override
+  final String transcript;
+
+  factory ConversationReviewRequest.forConversation(
+    LocalSessionSummary conversation,
+  ) {
+    final lines = conversation.utterances.isEmpty
+        ? [
+            '${conversation.speakerLabel.ifEmpty('未知说话人')}：'
+                '${conversation.transcript.trim()}',
+          ]
+        : conversation.utterances
+            .where((item) => item.transcript.trim().isNotEmpty)
+            .map((item) => '${item.speakerLabel.ifEmpty('未知说话人')}：'
+                '${item.transcript.trim()}')
+            .toList(growable: false);
+    return ConversationReviewRequest._(lines.join('\n'));
+  }
+
+  @override
+  List<Map<String, String>> messages() => [
+        {
+          'role': 'system',
+          'content': '你是家庭沟通教练。请只根据给出的文字判断表达风险，'
+              '不要诊断人格或心理疾病，也不要把它当作语音情绪结论。'
+              '用简洁、手机友好的 Markdown 输出，严格包含：'
+              '“## 表达风险”“## 依据”“## 更温和的说法”三个小节。'
+              '表达风险只能是低、中、高之一；没有风险时也要说明。',
+        },
+        {
+          'role': 'user',
+          'content': '请复核这一段本地转写：\n$transcript',
         },
       ];
 }
@@ -88,8 +135,8 @@ final class DailyAdviceResponse {
 
 final class LlmSettings {
   const LlmSettings({
-    this.baseUrl = 'https://api.openai.com/v1',
-    this.model = 'gpt-4o-mini',
+    this.baseUrl = 'https://apihub.agnes-ai.com/v1',
+    this.model = 'agnes-2.5-flash',
   });
 
   final String baseUrl;
@@ -103,10 +150,10 @@ final class LlmSettings {
   factory LlmSettings.fromJson(Map<String, dynamic> json) => LlmSettings(
         baseUrl: json['base_url']?.toString().trim().isNotEmpty == true
             ? json['base_url'].toString().trim()
-            : 'https://api.openai.com/v1',
+            : 'https://apihub.agnes-ai.com/v1',
         model: json['model']?.toString().trim().isNotEmpty == true
             ? json['model'].toString().trim()
-            : 'gpt-4o-mini',
+            : 'agnes-2.5-flash',
       );
 }
 
@@ -140,9 +187,7 @@ final class AdviceSettingsStore {
   Future<void> save(LlmSettings settings, String apiKey) async {
     await _storage.write(_settingsKey, jsonEncode(settings.toJson()));
     final trimmedKey = apiKey.trim();
-    if (trimmedKey.isEmpty) {
-      await _secureStorage.delete(apiKeyStorageKey);
-    } else {
+    if (trimmedKey.isNotEmpty) {
       await _secureStorage.write(apiKeyStorageKey, trimmedKey);
     }
   }
@@ -151,12 +196,17 @@ final class AdviceSettingsStore {
 }
 
 final class OpenAiCompatibleAdviceClient {
-  OpenAiCompatibleAdviceClient({Dio? dio}) : _dio = dio ?? Dio();
+  OpenAiCompatibleAdviceClient({Dio? dio})
+      : _dio = dio ??
+            Dio(BaseOptions(
+              connectTimeout: const Duration(seconds: 20),
+              receiveTimeout: const Duration(seconds: 90),
+            ));
 
   final Dio _dio;
 
   Future<String> generate({
-    required DailyAdviceRequest request,
+    required LlmPromptRequest request,
     required LlmSettings settings,
     required String apiKey,
   }) async {

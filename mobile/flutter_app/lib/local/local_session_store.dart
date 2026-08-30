@@ -19,6 +19,7 @@ final class LocalSessionSummary {
     this.emotionLabel = '',
     this.speakerLabel = '',
     this.utterances = const [],
+    this.llmReview,
   });
 
   final String id;
@@ -31,6 +32,7 @@ final class LocalSessionSummary {
   final String emotionLabel;
   final String speakerLabel;
   final List<LocalUtterance> utterances;
+  final LlmReview? llmReview;
 
   LocalSessionSummary copyWith({
     String? transcript,
@@ -39,6 +41,8 @@ final class LocalSessionSummary {
     String? emotionLabel,
     String? speakerLabel,
     List<LocalUtterance>? utterances,
+    LlmReview? llmReview,
+    bool clearLlmReview = false,
   }) {
     return LocalSessionSummary(
       id: id,
@@ -51,10 +55,11 @@ final class LocalSessionSummary {
       emotionLabel: emotionLabel ?? this.emotionLabel,
       speakerLabel: speakerLabel ?? this.speakerLabel,
       utterances: utterances ?? this.utterances,
+      llmReview: clearLlmReview ? null : llmReview ?? this.llmReview,
     );
   }
 
-  Map<String, Object> toJson() => {
+  Map<String, Object?> toJson() => {
         'id': id,
         'created_at': createdAt,
         'audio_path': audioPath,
@@ -65,6 +70,7 @@ final class LocalSessionSummary {
         'emotion_label': emotionLabel,
         'speaker_label': speakerLabel,
         'utterances': utterances.map((item) => item.toJson()).toList(),
+        'llm_review': llmReview?.toJson(),
       };
 
   factory LocalSessionSummary.fromJson(Map<String, dynamic> json) {
@@ -84,6 +90,10 @@ final class LocalSessionSummary {
               LocalUtterance.fromJson(Map<String, dynamic>.from(item)))
           .where((item) => item.id.isNotEmpty)
           .toList(growable: false),
+      llmReview: json['llm_review'] is Map
+          ? LlmReview.fromJson(
+              Map<String, dynamic>.from(json['llm_review'] as Map))
+          : null,
     );
   }
 }
@@ -159,4 +169,19 @@ final class LocalSessionStore {
       return const [];
     }
   }
+
+  Future<void> deleteByIds(Iterable<String> ids) async {
+    final targetIds = ids.toSet();
+    if (targetIds.isEmpty) return;
+    final existing = await loadAll();
+    final next = existing
+        .where((item) => !targetIds.contains(item.id))
+        .toList(growable: false);
+    await _storage.write(
+      _key,
+      jsonEncode(next.map((item) => item.toJson()).toList(growable: false)),
+    );
+  }
+
+  Future<void> clear() => _storage.write(_key, '[]');
 }

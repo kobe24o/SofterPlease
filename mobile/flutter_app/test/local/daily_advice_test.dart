@@ -14,6 +14,7 @@ void main() {
 
     expect(request.transcript, contains('妈妈：我愿意听。'));
     expect(request.transcript, isNot(contains('不应发送。')));
+    expect(request.messages().first['content'], contains('Markdown'));
   });
 
   test('advice response extracts OpenAI compatible message content', () {
@@ -28,6 +29,27 @@ void main() {
       '先倾听，再表达需要。',
     );
   });
+
+  test('conversation review asks for Markdown risk feedback on one recording',
+      () {
+    final request = ConversationReviewRequest.forConversation(
+      _summary('2026-08-30T09:00:00.000Z', '妈妈', '你根本不在乎我。'),
+    );
+
+    expect(request.messages().last['content'], contains('你根本不在乎我。'));
+    expect(request.messages().first['content'], contains('Markdown'));
+  });
+
+  test('saving settings with a blank key keeps the securely stored key',
+      () async {
+    final secure = _MemorySecureStorage()
+      ..values[AdviceSettingsStore.apiKeyStorageKey] = 'saved-key';
+    final store = AdviceSettingsStore(_MemoryStorage(), secure);
+
+    await store.save(const LlmSettings(), '');
+
+    expect(await store.readApiKey(), 'saved-key');
+  });
 }
 
 LocalSessionSummary _summary(String createdAt, String speaker, String text) =>
@@ -40,3 +62,32 @@ LocalSessionSummary _summary(String createdAt, String speaker, String text) =>
       emotionValue: 0,
       speakerLabel: speaker,
     );
+
+final class _MemoryStorage implements LocalStringStorage {
+  final values = <String, String>{};
+
+  @override
+  Future<String?> read(String key) async => values[key];
+
+  @override
+  Future<void> write(String key, String value) async {
+    values[key] = value;
+  }
+}
+
+final class _MemorySecureStorage implements SecureTextStorage {
+  final values = <String, String>{};
+
+  @override
+  Future<void> delete(String key) async {
+    values.remove(key);
+  }
+
+  @override
+  Future<String?> read(String key) async => values[key];
+
+  @override
+  Future<void> write(String key, String value) async {
+    values[key] = value;
+  }
+}
