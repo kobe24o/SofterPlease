@@ -164,8 +164,8 @@ class _HomePageState extends State<_HomePage> {
         onTimeout: () => PackageInfo(
           appName: 'SofterPlease',
           packageName: 'com.softerplease.app',
-          version: '2.3.0',
-          buildNumber: '15',
+          version: '2.3.1',
+          buildNumber: '16',
         ),
       );
       final todayAdvice =
