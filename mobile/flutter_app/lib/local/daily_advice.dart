@@ -2,6 +2,7 @@ import 'dart:convert';
 
 import 'package:dio/dio.dart';
 
+import 'conversation_models.dart';
 import 'local_session_store.dart';
 
 abstract interface class LlmPromptRequest {
@@ -108,6 +109,70 @@ final class ConversationReviewRequest implements LlmPromptRequest {
           'content': '请复核这一段本地转写：\n$transcript',
         },
       ];
+}
+
+final class UtteranceScoreRequest implements LlmPromptRequest {
+  const UtteranceScoreRequest._({
+    required this.role,
+    required this.transcript,
+  });
+
+  final String role;
+
+  @override
+  final String transcript;
+
+  factory UtteranceScoreRequest.forUtterance(LocalUtterance utterance) =>
+      UtteranceScoreRequest._(
+        role: utterance.speakerLabel.ifEmpty('未知说话人'),
+        transcript: utterance.transcript.trim(),
+      );
+
+  @override
+  List<Map<String, String>> messages() => [
+        {
+          'role': 'system',
+          'content': '你是家庭沟通教练。仅根据一条转写判断其表达对家庭沟通的影响，'
+              '不要诊断人格或心理疾病。只输出 JSON 对象，不要代码块或额外文字：'
+              '{"score":整数,"markdown":"Markdown"}。score 必须在 -100 到 100，'
+              '不友善或伤害性表达为负，尊重、倾听、支持性表达为正。markdown 用中文简要说明依据和更温和说法。',
+        },
+        {
+          'role': 'user',
+          'content': '$role：$transcript',
+        },
+      ];
+}
+
+final class UtteranceScoreResponse {
+  const UtteranceScoreResponse({
+    required this.score,
+    required this.markdown,
+  });
+
+  final int score;
+  final String markdown;
+
+  factory UtteranceScoreResponse.parse(String value) {
+    try {
+      final decoded = jsonDecode(value);
+      if (decoded is! Map) throw const FormatException('评分响应不是对象');
+      final score = decoded['score'];
+      final markdown = decoded['markdown']?.toString().trim() ?? '';
+      if (score is! num ||
+          score.toInt() != score ||
+          score < -100 ||
+          score > 100) {
+        throw const FormatException('评分必须是 -100 到 100 的整数');
+      }
+      if (markdown.isEmpty) throw const FormatException('评分说明为空');
+      return UtteranceScoreResponse(score: score.toInt(), markdown: markdown);
+    } on FormatException {
+      rethrow;
+    } catch (_) {
+      throw const FormatException('评分响应不是有效 JSON');
+    }
+  }
 }
 
 final class DailyAdviceResponse {

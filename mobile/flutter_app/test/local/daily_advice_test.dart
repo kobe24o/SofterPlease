@@ -40,6 +40,18 @@ void main() {
     expect(request.messages().first['content'], contains('Markdown'));
   });
 
+  test('utterance score requires an integer score within the fixed range', () {
+    expect(
+      UtteranceScoreResponse.parse('{"score":-72,"markdown":"## 依据\\n语气尖锐"}')
+          .score,
+      -72,
+    );
+    expect(
+      () => UtteranceScoreResponse.parse('{"score":101,"markdown":"x"}'),
+      throwsFormatException,
+    );
+  });
+
   test('saving settings with a blank key keeps the securely stored key',
       () async {
     final secure = _MemorySecureStorage()

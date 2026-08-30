@@ -16,28 +16,31 @@ void main() {
         final index = conversations.indexWhere((item) => item.id == updated.id);
         conversations[index] = updated;
       },
-      generate: (conversation) async {
-        started.add(conversation.id);
+      generate: (conversation, utterance) async {
+        started.add('${conversation.id}-${utterance.id}');
         activeRequests++;
         peakActiveRequests = peakActiveRequests < activeRequests
             ? activeRequests
             : peakActiveRequests;
         await Future<void>.delayed(Duration.zero);
         activeRequests--;
-        return '# 复核完成\n- 请暂停后再表达。';
+        return '{"score":-20,"markdown":"## 复核完成"}';
       },
       now: () => DateTime.utc(2026, 8, 30, 10),
       minimumRequestInterval: Duration.zero,
     );
 
     await Future.wait([
-      queue.enqueue(conversations[0]),
-      queue.enqueue(conversations[1]),
+      queue.enqueueUtterances(conversations[0]),
+      queue.enqueueUtterances(conversations[1]),
     ]);
 
-    expect(started, ['one', 'two']);
+    expect(started, ['one-utterance-1', 'two-utterance-1']);
     expect(peakActiveRequests, 1);
-    expect(conversations.every((item) => item.llmReview?.status == 'completed'),
+    expect(
+        conversations.every((item) =>
+            item.utterances.single.llmReview?.status ==
+            LlmSegmentReview.completed),
         isTrue);
   });
 
@@ -56,24 +59,26 @@ void main() {
       save: (updated) async {
         conversations[0] = updated;
       },
-      generate: (_) async {
+      generate: (_, __) async {
         calls++;
         if (calls == 1) throw StateError('temporarily unavailable');
-        return '## 表达风险\n低';
+        return '{"score":20,"markdown":"## 表达风险\\n低"}';
       },
       now: () => now,
       minimumRequestInterval: Duration.zero,
     );
 
-    await queue.enqueue(conversations.single);
-    expect(conversations.single.llmReview?.status, LlmReview.retryWaiting);
+    await queue.enqueueUtterances(conversations.single);
+    expect(conversations.single.utterances.single.llmReview?.status,
+        LlmSegmentReview.retryWaiting);
     expect(calls, 1);
 
     now = now.add(const Duration(seconds: 16));
     await queue.resume();
 
     expect(calls, 2);
-    expect(conversations.single.llmReview?.status, LlmReview.completed);
+    expect(conversations.single.utterances.single.llmReview?.status,
+        LlmSegmentReview.completed);
     queue.dispose();
   });
 }
@@ -85,4 +90,15 @@ LocalSessionSummary _conversation(String id) => LocalSessionSummary(
       durationSeconds: 12,
       transcript: '我不想再听了。',
       emotionValue: 0,
+      utterances: const [
+        LocalUtterance(
+          id: 'utterance-1',
+          startMilliseconds: 0,
+          endMilliseconds: 1000,
+          transcript: '我不想再听了。',
+          rawEmotion: 'NEUTRAL',
+          emotionLabel: '中性',
+          emotionValue: 0,
+        ),
+      ],
     );

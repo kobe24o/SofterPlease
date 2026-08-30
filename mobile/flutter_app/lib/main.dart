@@ -127,7 +127,7 @@ class _HomePageState extends State<_HomePage> {
     _reviewQueue = LlmReviewQueue(
       loadAll: _loadAllConversations,
       save: _saveConversation,
-      generate: _generateConversationReview,
+      generate: _generateUtteranceScore,
     );
     unawaited(_loadLocalState());
   }
@@ -371,11 +371,12 @@ class _HomePageState extends State<_HomePage> {
     );
     final key = await settingsStore.readApiKey();
     if (key?.trim().isEmpty ?? true) return;
-    await _reviewQueue.enqueue(conversation);
+    await _reviewQueue.enqueueUtterances(conversation);
   }
 
-  Future<String> _generateConversationReview(
+  Future<String> _generateUtteranceScore(
     LocalSessionSummary conversation,
+    LocalUtterance utterance,
   ) async {
     final preferences = _preferences ?? await SharedPreferences.getInstance();
     final settingsStore = AdviceSettingsStore(
@@ -384,7 +385,7 @@ class _HomePageState extends State<_HomePage> {
     );
     final key = await settingsStore.readApiKey();
     return OpenAiCompatibleAdviceClient().generate(
-      request: ConversationReviewRequest.forConversation(conversation),
+      request: UtteranceScoreRequest.forUtterance(utterance),
       settings: _llmSettings,
       apiKey: key ?? '',
     );
