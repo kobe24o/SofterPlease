@@ -8,12 +8,15 @@ import 'package:path_provider/path_provider.dart';
 import 'signed_update_feed.dart';
 import 'update_manifest.dart';
 
-const _feedSources = <String>[
+const _defaultFeedSources = <String>[
   'https://fastly.jsdelivr.net/gh/kobe24o/SofterPlease@update-feed/updates/latest.json',
   'https://raw.githubusercontent.com/kobe24o/SofterPlease/update-feed/updates/latest.json',
 ];
 
-const _publicKeyBase64 = String.fromEnvironment('UPDATE_PUBLIC_KEY_BASE64');
+const _defaultPublicKeyBase64 =
+    String.fromEnvironment('UPDATE_PUBLIC_KEY_BASE64');
+
+typedef FetchUpdateFeed = Future<List<int>> Function(Uri source);
 
 final class UpdateCheckResult {
   const UpdateCheckResult.current()
@@ -28,9 +31,21 @@ final class UpdateCheckResult {
 }
 
 final class UpdateService {
-  UpdateService({Dio? dio}) : _dio = dio ?? Dio();
+  UpdateService({
+    Dio? dio,
+    List<Uri>? feedSources,
+    String? publicKeyBase64,
+    FetchUpdateFeed? fetchFeed,
+  })  : _dio = dio ?? Dio(),
+        _feedSources = feedSources ??
+            _defaultFeedSources.map(Uri.parse).toList(growable: false),
+        _publicKeyBase64 = publicKeyBase64 ?? _defaultPublicKeyBase64,
+        _fetchFeed = fetchFeed;
 
   final Dio _dio;
+  final List<Uri> _feedSources;
+  final String _publicKeyBase64;
+  final FetchUpdateFeed? _fetchFeed;
 
   Future<UpdateCheckResult> check({required int currentBuildNumber}) async {
     if (_publicKeyBase64.isEmpty) {
@@ -38,14 +53,11 @@ final class UpdateService {
     }
     final publicKey = _readPublicKey();
     final failures = <String>[];
+    var sawValidManifest = false;
     for (final source in _feedSources) {
       try {
-        final response = await _dio.get<List<int>>(
-          source,
-          options: Options(responseType: ResponseType.bytes),
-        );
         final payload = await SignedUpdateFeed.verifyEnvelope(
-          List<int>.from(response.data ?? const []),
+          await _readFeed(source),
           publicKey: publicKey,
         );
         final decoded = jsonDecode(utf8.decode(payload));
@@ -56,13 +68,15 @@ final class UpdateService {
         if (!manifest.isInstallable) {
           throw const FormatException('更新包身份信息不完整');
         }
-        return manifest.isNewerThan(currentBuildNumber: currentBuildNumber)
-            ? UpdateCheckResult.available(manifest)
-            : const UpdateCheckResult.current();
+        sawValidManifest = true;
+        if (manifest.isNewerThan(currentBuildNumber: currentBuildNumber)) {
+          return UpdateCheckResult.available(manifest);
+        }
       } catch (error) {
         failures.add(error.toString());
       }
     }
+    if (sawValidManifest) return const UpdateCheckResult.current();
     return UpdateCheckResult.unavailable('检查更新失败：${failures.join('；')}');
   }
 
@@ -97,6 +111,16 @@ final class UpdateService {
     } on FormatException {
       throw StateError('更新公钥配置无效');
     }
+  }
+
+  Future<List<int>> _readFeed(Uri source) async {
+    final fetchFeed = _fetchFeed;
+    if (fetchFeed != null) return fetchFeed(source);
+    final response = await _dio.get<List<int>>(
+      source.toString(),
+      options: Options(responseType: ResponseType.bytes),
+    );
+    return List<int>.from(response.data ?? const []);
   }
 
   Future<void> _verifyHash(File file, String expected) async {
