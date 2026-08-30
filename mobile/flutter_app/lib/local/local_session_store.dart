@@ -15,6 +15,7 @@ final class LocalSessionSummary {
     required this.durationSeconds,
     required this.transcript,
     required this.emotionValue,
+    this.recordingGroupId,
     this.analysisState = 'awaiting_model',
     this.emotionLabel = '',
     this.speakerLabel = '',
@@ -28,6 +29,7 @@ final class LocalSessionSummary {
   final int durationSeconds;
   final String transcript;
   final int emotionValue;
+  final String? recordingGroupId;
   final String analysisState;
   final String emotionLabel;
   final String speakerLabel;
@@ -51,6 +53,7 @@ final class LocalSessionSummary {
       durationSeconds: durationSeconds,
       transcript: transcript ?? this.transcript,
       emotionValue: emotionValue ?? this.emotionValue,
+      recordingGroupId: recordingGroupId,
       analysisState: analysisState ?? this.analysisState,
       emotionLabel: emotionLabel ?? this.emotionLabel,
       speakerLabel: speakerLabel ?? this.speakerLabel,
@@ -66,6 +69,7 @@ final class LocalSessionSummary {
         'duration_seconds': durationSeconds,
         'transcript': transcript,
         'emotion_value': emotionValue,
+        'recording_group_id': recordingGroupId,
         'analysis_state': analysisState,
         'emotion_label': emotionLabel,
         'speaker_label': speakerLabel,
@@ -81,6 +85,7 @@ final class LocalSessionSummary {
       durationSeconds: (json['duration_seconds'] as num?)?.toInt() ?? 0,
       transcript: json['transcript']?.toString() ?? '',
       emotionValue: (json['emotion_value'] as num?)?.toInt() ?? 0,
+      recordingGroupId: json['recording_group_id']?.toString(),
       analysisState: json['analysis_state']?.toString() ?? 'awaiting_model',
       emotionLabel: json['emotion_label']?.toString() ?? '',
       speakerLabel: json['speaker_label']?.toString() ?? '',

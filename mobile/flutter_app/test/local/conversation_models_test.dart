@@ -45,6 +45,47 @@ void main() {
     expect(saved.single, containsPair('llm_review', isNull));
   });
 
+  test('conversation JSON preserves per-utterance score and recording group',
+      () async {
+    final storage = _MemoryStorage();
+    final store = LocalSessionStore(storage);
+    await store.save(LocalSessionSummary(
+      id: 'conversation-score',
+      recordingGroupId: 'group-1',
+      createdAt: '2026-08-30T10:00:00.000Z',
+      audioPath: '/local/conversation-score.wav',
+      durationSeconds: 12,
+      transcript: '你根本不在乎我。',
+      emotionValue: 0,
+      utterances: const [
+        LocalUtterance(
+          id: 'utterance-1',
+          startMilliseconds: 0,
+          endMilliseconds: 1200,
+          transcript: '你根本不在乎我。',
+          rawEmotion: 'NEUTRAL',
+          emotionLabel: '中性',
+          emotionValue: 0,
+          speakerLabel: '妈妈',
+          llmReview: LlmSegmentReview(
+            status: LlmSegmentReview.completed,
+            attempts: 1,
+            updatedAt: '2026-08-30T10:01:00.000Z',
+            score: -72,
+            markdown: '## 表达风险\n高',
+          ),
+        ),
+      ],
+    ));
+
+    final loaded = await store.loadAll();
+
+    expect(loaded.single.recordingGroupId, 'group-1');
+    expect(loaded.single.utterances.single.llmReview?.score, -72);
+    expect(
+        loaded.single.utterances.single.llmReview?.markdown, contains('表达风险'));
+  });
+
   test('deleting selected recordings preserves other local records', () async {
     final storage = _MemoryStorage();
     final store = LocalSessionStore(storage);

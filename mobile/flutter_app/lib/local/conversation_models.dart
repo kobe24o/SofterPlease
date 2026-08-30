@@ -44,6 +44,51 @@ final class LlmReview {
       );
 }
 
+final class LlmSegmentReview {
+  const LlmSegmentReview({
+    required this.status,
+    required this.attempts,
+    required this.updatedAt,
+    this.score,
+    this.markdown,
+    this.nextRetryAt,
+    this.lastError,
+  });
+
+  static const queued = 'queued';
+  static const retryWaiting = 'retry_waiting';
+  static const completed = 'completed';
+
+  final String status;
+  final int attempts;
+  final String updatedAt;
+  final int? score;
+  final String? markdown;
+  final String? nextRetryAt;
+  final String? lastError;
+
+  Map<String, Object?> toJson() => {
+        'status': status,
+        'attempts': attempts,
+        'updated_at': updatedAt,
+        'score': score,
+        'markdown': markdown,
+        'next_retry_at': nextRetryAt,
+        'last_error': lastError,
+      };
+
+  factory LlmSegmentReview.fromJson(Map<String, dynamic> json) =>
+      LlmSegmentReview(
+        status: json['status']?.toString() ?? queued,
+        attempts: (json['attempts'] as num?)?.toInt() ?? 0,
+        updatedAt: json['updated_at']?.toString() ?? '',
+        score: (json['score'] as num?)?.toInt(),
+        markdown: json['markdown']?.toString(),
+        nextRetryAt: json['next_retry_at']?.toString(),
+        lastError: json['last_error']?.toString(),
+      );
+}
+
 final class LocalUtterance {
   const LocalUtterance({
     required this.id,
@@ -57,6 +102,7 @@ final class LocalUtterance {
     this.speakerLabel = '未知说话人',
     this.sessionCluster = 0,
     this.embedding,
+    this.llmReview,
   });
 
   final String id;
@@ -70,10 +116,13 @@ final class LocalUtterance {
   final String speakerLabel;
   final int sessionCluster;
   final Float32List? embedding;
+  final LlmSegmentReview? llmReview;
 
   LocalUtterance copyWith({
     String? speakerId,
     String? speakerLabel,
+    LlmSegmentReview? llmReview,
+    bool clearLlmReview = false,
   }) =>
       LocalUtterance(
         id: id,
@@ -87,6 +136,7 @@ final class LocalUtterance {
         speakerLabel: speakerLabel ?? this.speakerLabel,
         sessionCluster: sessionCluster,
         embedding: embedding == null ? null : Float32List.fromList(embedding!),
+        llmReview: clearLlmReview ? null : llmReview ?? this.llmReview,
       );
 
   Map<String, Object?> toJson() => {
@@ -101,6 +151,7 @@ final class LocalUtterance {
         'speaker_label': speakerLabel,
         'session_cluster': sessionCluster,
         'embedding': embedding == null ? null : _encodeEmbedding(embedding!),
+        'llm_review': llmReview?.toJson(),
       };
 
   factory LocalUtterance.fromJson(Map<String, dynamic> json) => LocalUtterance(
@@ -115,6 +166,10 @@ final class LocalUtterance {
         speakerLabel: json['speaker_label']?.toString() ?? '未知说话人',
         sessionCluster: (json['session_cluster'] as num?)?.toInt() ?? 0,
         embedding: _decodeEmbedding(json['embedding']?.toString()),
+        llmReview: json['llm_review'] is Map
+            ? LlmSegmentReview.fromJson(
+                Map<String, dynamic>.from(json['llm_review'] as Map))
+            : null,
       );
 }
 
