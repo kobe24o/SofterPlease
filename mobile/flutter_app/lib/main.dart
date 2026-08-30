@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:audioplayers/audioplayers.dart';
 import 'package:flutter/material.dart';
@@ -17,8 +18,11 @@ import 'local/local_session_store.dart';
 import 'local/local_speech_analysis.dart';
 import 'local/llm_review_queue.dart';
 import 'local/model_pack.dart';
+import 'local/recording_segmenter.dart';
+import 'local/score_trends.dart';
 import 'update/android_update_bridge.dart';
 import 'update/update_manifest.dart';
+import 'widgets/role_score_trend_chart.dart';
 import 'update/update_service.dart';
 
 void main() {
@@ -100,6 +104,11 @@ class _HomePageState extends State<_HomePage> {
   final _apiKeyController = TextEditingController();
   late final LlmReviewQueue _reviewQueue;
   Timer? _recordingTimer;
+  StreamSubscription<Uint8List>? _recordingStreamSubscription;
+  Completer<void>? _recordingStreamClosed;
+  PcmRecordingSegmentCoordinator? _segmentCoordinator;
+  StreamingVadBoundaryDetector? _streamingVad;
+  Future<void> _streamProcessing = Future<void>.value();
 
   SharedPreferences? _preferences;
   LocalModelPack? _modelPack;
@@ -108,7 +117,8 @@ class _HomePageState extends State<_HomePage> {
   LlmSettings _llmSettings = const LlmSettings();
   UpdateCheckResult? _updateResult;
   PackageInfo? _packageInfo;
-  String? _recordPath;
+  String? _recordingGroupId;
+  Directory? _recordingDirectory;
   String? _dailyAdvice;
   String _statusText = '正在准备本地模型…';
   int _tabIndex = 0;
@@ -120,6 +130,7 @@ class _HomePageState extends State<_HomePage> {
   bool _isCheckingUpdate = false;
   bool _hasStoredApiKey = false;
   bool _obscureApiKey = true;
+  ScorePeriod _scorePeriod = ScorePeriod.week;
 
   @override
   void initState() {
@@ -135,6 +146,8 @@ class _HomePageState extends State<_HomePage> {
   @override
   void dispose() {
     _recordingTimer?.cancel();
+    unawaited(_recordingStreamSubscription?.cancel());
+    _streamingVad?.dispose();
     _reviewQueue.dispose();
     _recorder.dispose();
     _player.dispose();
@@ -222,8 +235,8 @@ class _HomePageState extends State<_HomePage> {
       _showSnack('请允许麦克风权限后再录音');
       return;
     }
-    if (!await _recorder.isEncoderSupported(AudioEncoder.wav)) {
-      _showSnack('当前设备不支持 WAV 录音');
+    if (!await _recorder.isEncoderSupported(AudioEncoder.pcm16bits)) {
+      _showSnack('当前设备不支持 16 kHz PCM 录音');
       return;
     }
     try {
@@ -231,22 +244,45 @@ class _HomePageState extends State<_HomePage> {
       final directory =
           Directory('${root.path}${Platform.pathSeparator}recordings');
       await directory.create(recursive: true);
-      final path = '${directory.path}${Platform.pathSeparator}'
-          'conversation_${DateTime.now().millisecondsSinceEpoch}.wav';
-      await _recorder.start(
+      final groupId = 'group_${DateTime.now().millisecondsSinceEpoch}';
+      final pack = _modelPack;
+      _streamingVad?.dispose();
+      _streamingVad = pack?.isInstalled == true
+          ? _analyzer.createStreamingVad(pack!)
+          : null;
+      _segmentCoordinator = PcmRecordingSegmentCoordinator(
+        segmenter: PcmSegmenter(sampleRate: 16000),
+        endsAtVadBoundary: (bytes) =>
+            _streamingVad?.acceptPcm16(bytes) ?? false,
+      );
+      _recordingGroupId = groupId;
+      _recordingDirectory = directory;
+      _streamProcessing = Future<void>.value();
+      _recordingStreamClosed = Completer<void>();
+      final stream = await _recorder.startStream(
         const RecordConfig(
-          encoder: AudioEncoder.wav,
+          encoder: AudioEncoder.pcm16bits,
           sampleRate: 16000,
           numChannels: 1,
         ),
-        path: path,
+      );
+      _recordingStreamSubscription = stream.listen(
+        _acceptPcmFrame,
+        onError: (Object error, StackTrace stackTrace) {
+          _recordingStreamClosed?.completeError(error, stackTrace);
+        },
+        onDone: () {
+          if (!(_recordingStreamClosed?.isCompleted ?? true)) {
+            _recordingStreamClosed!.complete();
+          }
+        },
+        cancelOnError: false,
       );
       if (!mounted) return;
       setState(() {
-        _recordPath = path;
         _isRecording = true;
         _recordingSeconds = 0;
-        _statusText = '正在本机录音；不会上传到 SofterPlease 服务端。';
+        _statusText = '正在本机录音；每约 60 秒在 VAD 静音点切分并陆续分析。';
       });
       _recordingTimer?.cancel();
       _recordingTimer = Timer.periodic(const Duration(seconds: 1), (_) {
@@ -260,55 +296,94 @@ class _HomePageState extends State<_HomePage> {
   Future<void> _stopAndAnalyze() async {
     _recordingTimer?.cancel();
     try {
-      final stopped = await _recorder.stop();
-      final path = stopped ?? _recordPath;
-      if (path == null || !await File(path).exists()) {
-        throw StateError('本地录音文件不存在');
-      }
       if (mounted) {
         setState(() {
           _isRecording = false;
           _isAnalyzing = true;
-          _recordPath = path;
-          _statusText = '正在由手机本地模型切分、转写并识别声纹…';
+          _statusText = '正在完成最后一段，并继续在手机本地分析…';
         });
       }
-      final duration = _estimateWavDuration(await File(path).length());
-      final pack = _modelPack;
-      if (pack?.isInstalled != true) {
-        await _saveConversation(
-          _summaryFor(path, duration.round()),
-        );
-        if (mounted) setState(() => _statusText = '录音已本地保存，模型就绪后可在对话页重新分析。');
-        return;
+      await _recorder.stop();
+      final closed = _recordingStreamClosed;
+      if (closed != null) {
+        await closed.future.timeout(const Duration(seconds: 10));
       }
-      await Future<void>.delayed(const Duration(milliseconds: 16));
-      final analysis =
-          await _analyzer.analyze(audioPath: path, modelPack: pack!);
-      final utterances = _assignKnownSpeakers(analysis.utterances);
-      final conversation = _summaryFor(
-        path,
-        duration.round(),
-        transcript: analysis.transcript,
-        emotionValue: analysis.emotionValue,
-        emotionLabel: analysis.emotionLabel,
-        speakerLabel: analysis.speakerLabel,
-        analysisState: 'completed',
-        utterances: utterances,
-      );
-      await _saveConversation(conversation);
-      unawaited(_enqueueReviewIfConfigured(conversation));
+      await _streamProcessing;
+      final coordinator = _segmentCoordinator;
+      if (coordinator != null) {
+        for (final segment in coordinator.finish()) {
+          await _processPcmSegment(segment);
+        }
+      }
       if (mounted) {
         setState(() {
-          _statusText = '本地分析完成：${analysis.speechSegmentCount} 段语音，'
-              '${analysis.speakerLabel}。可在对话页纠正说话人。';
+          _statusText = '本地分析完成；每段均已单独保存，可在对话页纠正说话人。';
         });
       }
     } catch (error) {
       _showSnack('本地分析失败：${_message(error)}');
       if (mounted) setState(() => _statusText = '分析未完成；录音文件仍保存在本机。');
     } finally {
+      await _recordingStreamSubscription?.cancel();
+      _recordingStreamSubscription = null;
+      _recordingStreamClosed = null;
+      _segmentCoordinator = null;
+      _streamingVad?.dispose();
+      _streamingVad = null;
       if (mounted) setState(() => _isAnalyzing = false);
+    }
+  }
+
+  void _acceptPcmFrame(Uint8List bytes) {
+    _streamProcessing = _streamProcessing.then((_) async {
+      final coordinator = _segmentCoordinator;
+      if (coordinator == null) return;
+      for (final segment in coordinator.accept(bytes)) {
+        await _processPcmSegment(segment);
+      }
+    });
+  }
+
+  Future<void> _processPcmSegment(PcmSegment segment) async {
+    final directory = _recordingDirectory;
+    final groupId = _recordingGroupId;
+    if (directory == null || groupId == null) return;
+    final index = (segment.startSample / 16000).floor();
+    final path = '${directory.path}${Platform.pathSeparator}'
+        '${groupId}_$index.wav';
+    await PcmWavWriter.write(
+      file: File(path),
+      segment: segment,
+      sampleRate: 16000,
+    );
+    final duration = (segment.durationSamples / 16000).round();
+    final pack = _modelPack;
+    if (pack?.isInstalled != true) {
+      await _saveConversation(_summaryFor(
+        path,
+        duration,
+        recordingGroupId: groupId,
+      ));
+      return;
+    }
+    final analysis = await _analyzer.analyze(audioPath: path, modelPack: pack!);
+    final conversation = _summaryFor(
+      path,
+      duration,
+      recordingGroupId: groupId,
+      transcript: analysis.transcript,
+      emotionValue: analysis.emotionValue,
+      emotionLabel: analysis.emotionLabel,
+      speakerLabel: analysis.speakerLabel,
+      analysisState: 'completed',
+      utterances: _assignKnownSpeakers(analysis.utterances),
+    );
+    await _saveConversation(conversation);
+    unawaited(_enqueueReviewIfConfigured(conversation));
+    if (mounted) {
+      setState(() {
+        _statusText = '已完成 ${_formatDuration(duration)} 片段的本地分析；后续片段仍在继续。';
+      });
     }
   }
 
@@ -319,6 +394,7 @@ class _HomePageState extends State<_HomePage> {
     int emotionValue = 0,
     String emotionLabel = '',
     String speakerLabel = '',
+    String? recordingGroupId,
     String analysisState = 'awaiting_model',
     List<LocalUtterance> utterances = const [],
   }) =>
@@ -332,6 +408,7 @@ class _HomePageState extends State<_HomePage> {
         analysisState: analysisState,
         emotionLabel: emotionLabel,
         speakerLabel: speakerLabel,
+        recordingGroupId: recordingGroupId,
         utterances: utterances,
       );
 
@@ -716,13 +793,25 @@ class _HomePageState extends State<_HomePage> {
   String _dailyAdviceStorageKey(DateTime day) =>
       '$_dailyAdviceKeyPrefix${day.year.toString().padLeft(4, '0')}${day.month.toString().padLeft(2, '0')}${day.day.toString().padLeft(2, '0')}';
 
-  double _estimateWavDuration(int bytes) {
-    final payload = bytes > 44 ? bytes - 44 : 0;
-    return payload / (16000 * 2);
-  }
-
   String _formatDuration(int seconds) =>
       '${(seconds ~/ 60).toString().padLeft(2, '0')}:${(seconds % 60).toString().padLeft(2, '0')}';
+
+  String _scoreLabel(LlmSegmentReview? review) {
+    if (review?.status == LlmSegmentReview.completed && review?.score != null) {
+      return '评分 ${review!.score! > 0 ? '+' : ''}${review.score}';
+    }
+    return switch (review?.status) {
+      LlmSegmentReview.retryWaiting => '评分将自动重试',
+      LlmSegmentReview.queued => '评分排队中',
+      _ => '等待评分',
+    };
+  }
+
+  Color _scoreColor(LlmSegmentReview? review) {
+    final score = review?.score;
+    if (score == null) return Colors.blueGrey;
+    return score < 0 ? Colors.red.shade700 : Colors.green.shade700;
+  }
 
   String _formatDate(String value) {
     final date = DateTime.tryParse(value)?.toLocal();
@@ -908,10 +997,8 @@ class _HomePageState extends State<_HomePage> {
                                     style: Theme.of(context)
                                         .textTheme
                                         .titleMedium)),
-                            _EmotionChip(
-                                label: conversation.emotionLabel.isEmpty
-                                    ? '待分析'
-                                    : conversation.emotionLabel),
+                            _ConversationScoreSummary(
+                                conversation: conversation),
                           ],
                         ),
                         const SizedBox(height: 8),
@@ -973,28 +1060,54 @@ class _HomePageState extends State<_HomePage> {
               const SizedBox(height: 6),
               const Text('声音情绪在本机完成；大模型复核会自动串行发送转写文本。点击每句可纠正说话人。'),
               const SizedBox(height: 16),
-              if (conversation.llmReview != null) ...[
-                _LlmReviewPanel(review: conversation.llmReview!),
-                const SizedBox(height: 12),
-              ],
               if (conversation.utterances.isEmpty)
                 const _EmptyState(
                     icon: Icons.auto_awesome, text: '暂无逐段结果，可返回后重新本地分析。')
               else
                 for (final utterance in conversation.utterances) ...[
                   _SectionCard(
-                    child: ListTile(
-                      contentPadding: const EdgeInsets.symmetric(
-                          horizontal: 14, vertical: 4),
-                      leading: CircleAvatar(
-                          child: Text(utterance.speakerLabel.characters.first)),
-                      title: Text(utterance.speakerLabel),
-                      subtitle: Text(
-                          '${utterance.transcript}\n${utterance.emotionLabel} · ${_formatDuration(utterance.startMilliseconds ~/ 1000)}'),
-                      isThreeLine: true,
-                      trailing: const Icon(Icons.edit_outlined),
-                      onTap: () =>
-                          _showCorrectionSheet(conversation, utterance),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        ListTile(
+                          contentPadding: const EdgeInsets.symmetric(
+                              horizontal: 14, vertical: 4),
+                          leading: CircleAvatar(
+                              child: Text(
+                                  utterance.speakerLabel.characters.first)),
+                          title: Text(utterance.speakerLabel),
+                          subtitle: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(utterance.transcript),
+                              const SizedBox(height: 2),
+                              Text(
+                                '${_scoreLabel(utterance.llmReview)} · ${_formatDuration(utterance.startMilliseconds ~/ 1000)}',
+                                style: TextStyle(
+                                  color: _scoreColor(utterance.llmReview),
+                                  fontWeight: FontWeight.w700,
+                                ),
+                              ),
+                            ],
+                          ),
+                          isThreeLine: true,
+                          trailing: const Icon(Icons.edit_outlined),
+                          onTap: () =>
+                              _showCorrectionSheet(conversation, utterance),
+                        ),
+                        if (utterance.llmReview?.markdown != null) ...[
+                          const Divider(height: 1),
+                          Padding(
+                            padding: const EdgeInsets.fromLTRB(14, 8, 14, 12),
+                            child: MarkdownBody(
+                              data: utterance.llmReview!.markdown!,
+                              selectable: true,
+                              styleSheet: MarkdownStyleSheet.fromTheme(
+                                  Theme.of(context)),
+                            ),
+                          ),
+                        ],
+                      ],
                     ),
                   ),
                   const SizedBox(height: 10),
@@ -1033,6 +1146,37 @@ class _HomePageState extends State<_HomePage> {
             ),
           ),
           const SizedBox(height: 14),
+          if (_profiles.isNotEmpty)
+            _SectionCard(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text('角色沟通评分趋势',
+                      style: TextStyle(fontWeight: FontWeight.w700)),
+                  const SizedBox(height: 8),
+                  SegmentedButton<ScorePeriod>(
+                    segments: const [
+                      ButtonSegment(value: ScorePeriod.day, label: Text('日')),
+                      ButtonSegment(value: ScorePeriod.week, label: Text('周')),
+                      ButtonSegment(value: ScorePeriod.month, label: Text('月')),
+                      ButtonSegment(value: ScorePeriod.year, label: Text('年')),
+                    ],
+                    selected: {_scorePeriod},
+                    onSelectionChanged: (value) =>
+                        setState(() => _scorePeriod = value.first),
+                  ),
+                  for (final profile in _profiles) ...[
+                    const SizedBox(height: 16),
+                    _RoleScoreTrend(
+                      name: profile.name,
+                      period: _scorePeriod,
+                      conversations: _conversations,
+                    ),
+                  ],
+                ],
+              ),
+            ),
+          if (_profiles.isNotEmpty) const SizedBox(height: 14),
           _SectionCard(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -1164,66 +1308,75 @@ class _EmptyState extends StatelessWidget {
       );
 }
 
-class _LlmReviewPanel extends StatelessWidget {
-  const _LlmReviewPanel({required this.review});
+class _ConversationScoreSummary extends StatelessWidget {
+  const _ConversationScoreSummary({required this.conversation});
 
-  final LlmReview review;
+  final LocalSessionSummary conversation;
 
   @override
   Widget build(BuildContext context) {
-    final status = switch (review.status) {
-      LlmReview.completed => '大模型复核完成',
-      LlmReview.retryWaiting => '复核失败，正在退避重试',
-      _ => '正在排队等待大模型复核',
-    };
-    return _SectionCard(
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              const Icon(Icons.auto_awesome_outlined),
-              const SizedBox(width: 8),
-              Expanded(
-                child: Text(status,
-                    style: const TextStyle(fontWeight: FontWeight.w700)),
-              ),
-            ],
-          ),
-          const SizedBox(height: 10),
-          if (review.content != null)
-            MarkdownBody(
-              data: review.content!,
-              selectable: true,
-              styleSheet: MarkdownStyleSheet.fromTheme(Theme.of(context)),
-            )
-          else
-            Text(review.lastError == null
-                ? '请求将按顺序发送，避免超过模型服务限流。'
-                : '上次失败：${review.lastError}'),
-        ],
-      ),
+    final values = <String, List<int>>{};
+    var pending = false;
+    for (final utterance in conversation.utterances) {
+      final review = utterance.llmReview;
+      if (review?.status == LlmSegmentReview.completed &&
+          review?.score != null) {
+        values
+            .putIfAbsent(utterance.speakerLabel, () => [])
+            .add(review!.score!);
+      } else if (utterance.transcript.trim().isNotEmpty) {
+        pending = true;
+      }
+    }
+    if (values.isEmpty) return Text(pending ? '评分中' : '暂无评分');
+    return Wrap(
+      spacing: 4,
+      children: values.entries.map((entry) {
+        final score =
+            (entry.value.reduce((a, b) => a + b) / entry.value.length).round();
+        final color = score < 0
+            ? Colors.red.shade700
+            : score > 0
+                ? Colors.green.shade700
+                : Colors.blueGrey;
+        final prefix = score > 0 ? '+' : '';
+        return Chip(
+          label: Text('${entry.key} $prefix$score'),
+          labelStyle: TextStyle(color: color, fontSize: 12),
+          backgroundColor: color.withValues(alpha: 0.1),
+          side: BorderSide.none,
+        );
+      }).toList(growable: false),
     );
   }
 }
 
-class _EmotionChip extends StatelessWidget {
-  const _EmotionChip({required this.label});
+class _RoleScoreTrend extends StatelessWidget {
+  const _RoleScoreTrend({
+    required this.name,
+    required this.period,
+    required this.conversations,
+  });
 
-  final String label;
+  final String name;
+  final ScorePeriod period;
+  final List<LocalSessionSummary> conversations;
 
   @override
   Widget build(BuildContext context) {
-    final color = switch (label) {
-      '积极' => Colors.green.shade700,
-      '消极' => Colors.orange.shade800,
-      _ => Colors.blueGrey.shade700,
-    };
-    return Chip(
-      label: Text(label),
-      labelStyle: TextStyle(color: color, fontSize: 12),
-      side: BorderSide.none,
-      backgroundColor: color.withValues(alpha: 0.1),
+    final series = ScoreTrendBuilder.build(
+      period: period,
+      role: name,
+      now: DateTime.now(),
+      conversations: conversations,
+    );
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text('$name的沟通评分趋势'),
+        Text('${series.sampleCount} 条已评分片段'),
+        RoleScoreTrendChart(series: series),
+      ],
     );
   }
 }

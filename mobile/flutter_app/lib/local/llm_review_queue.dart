@@ -48,7 +48,7 @@ final class LlmReviewQueue {
     await _save(conversation.copyWith(
       utterances: conversation.utterances.map((utterance) {
         if (utterance.transcript.trim().isEmpty ||
-            utterance.llmReview?.status == LlmSegmentReview.completed) {
+            utterance.llmReview != null) {
           return utterance;
         }
         return utterance.copyWith(

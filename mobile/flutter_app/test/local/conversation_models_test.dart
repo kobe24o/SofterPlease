@@ -49,7 +49,7 @@ void main() {
       () async {
     final storage = _MemoryStorage();
     final store = LocalSessionStore(storage);
-    await store.save(LocalSessionSummary(
+    await store.save(const LocalSessionSummary(
       id: 'conversation-score',
       recordingGroupId: 'group-1',
       createdAt: '2026-08-30T10:00:00.000Z',
@@ -57,7 +57,7 @@ void main() {
       durationSeconds: 12,
       transcript: '你根本不在乎我。',
       emotionValue: 0,
-      utterances: const [
+      utterances: [
         LocalUtterance(
           id: 'utterance-1',
           startMilliseconds: 0,

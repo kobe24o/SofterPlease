@@ -90,6 +90,19 @@ final class LocalSpeechAnalysis {
 final class LocalSpeechAnalyzer {
   static bool _bindingsReady = false;
 
+  /// Creates a lightweight VAD gate for recording-time cut points.  Completed
+  /// VAD segments are emitted only after a real silence boundary, so the PCM
+  /// segmenter can avoid splitting in the middle of a sentence.
+  StreamingVadBoundaryDetector createStreamingVad(
+    LocalModelPack modelPack,
+  ) {
+    if (!modelPack.isInstalled) {
+      throw StateError('本地语音模型尚未安装');
+    }
+    _ensureBindings();
+    return StreamingVadBoundaryDetector(modelPath: modelPack.vadPath);
+  }
+
   Future<LocalSpeechAnalysis> analyze({
     required String audioPath,
     required LocalModelPack modelPack,
@@ -247,6 +260,51 @@ final class LocalSpeechAnalyzer {
     }
     clusters.add(_SpeakerCluster(embedding));
     return clusters.length;
+  }
+}
+
+final class StreamingVadBoundaryDetector {
+  StreamingVadBoundaryDetector({required String modelPath})
+      : _vad = VoiceActivityDetector(
+          config: VadModelConfig(
+            tenVad: TenVadModelConfig(
+              model: modelPath,
+              threshold: 0.5,
+              minSilenceDuration: 0.35,
+              minSpeechDuration: 0.25,
+              // This only finds natural endpoints. The recorder owns the
+              // 66-second safety cap, so VAD itself must not force a split.
+              maxSpeechDuration: 90,
+            ),
+            numThreads: 1,
+            debug: false,
+          ),
+          bufferSizeInSeconds: 100,
+        );
+
+  final VoiceActivityDetector _vad;
+  bool _disposed = false;
+
+  bool acceptPcm16(Uint8List bytes) {
+    if (_disposed || bytes.isEmpty || bytes.length.isOdd) return false;
+    final raw = ByteData.sublistView(bytes);
+    final samples = Float32List(bytes.length ~/ 2);
+    for (var index = 0; index < samples.length; index++) {
+      samples[index] = raw.getInt16(index * 2, Endian.little) / 32768;
+    }
+    _vad.acceptWaveform(samples);
+    var endedAtSilence = false;
+    while (!_vad.isEmpty()) {
+      _vad.pop();
+      endedAtSilence = true;
+    }
+    return endedAtSilence;
+  }
+
+  void dispose() {
+    if (_disposed) return;
+    _disposed = true;
+    _vad.free();
   }
 }
 

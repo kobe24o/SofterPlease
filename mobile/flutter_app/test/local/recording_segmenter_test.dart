@@ -66,6 +66,22 @@ void main() {
     expect(_join(emitted), original);
     expect(segmenter.finish(), isEmpty);
   });
+
+  test('uses the supplied VAD gate when routing stream frames', () {
+    final coordinator = PcmRecordingSegmentCoordinator(
+      segmenter: PcmSegmenter(
+        sampleRate: 10,
+        targetSeconds: 6,
+        maxSeconds: 7,
+        boundaryLookbackSeconds: 2,
+      ),
+      endsAtVadBoundary: (bytes) => bytes.first == 9,
+    );
+    expect(coordinator.accept(_pcmSamples(60)), isEmpty);
+
+    final withBoundary = coordinator.accept(Uint8List.fromList([9, 0]));
+    expect(withBoundary.single.durationSamples, 61);
+  });
 }
 
 Uint8List _pcmSamples(int count) => Uint8List.fromList(

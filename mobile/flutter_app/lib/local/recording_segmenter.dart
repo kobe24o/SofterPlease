@@ -111,6 +111,29 @@ final class PcmSegmenter {
   }
 }
 
+/// Connects a stream of PCM frames to [PcmSegmenter].  The detector is kept
+/// outside the segmenter so that the boundary policy remains deterministic and
+/// easy to test, while the app can supply the on-device VAD implementation.
+typedef PcmSilenceBoundaryDetector = bool Function(Uint8List bytes);
+
+final class PcmRecordingSegmentCoordinator {
+  PcmRecordingSegmentCoordinator({
+    required PcmSegmenter segmenter,
+    required PcmSilenceBoundaryDetector endsAtVadBoundary,
+  })  : _segmenter = segmenter,
+        _endsAtVadBoundary = endsAtVadBoundary;
+
+  final PcmSegmenter _segmenter;
+  final PcmSilenceBoundaryDetector _endsAtVadBoundary;
+
+  List<PcmSegment> accept(Uint8List bytes) => _segmenter.push(PcmFrame(
+        bytes: bytes,
+        endsInSilence: _endsAtVadBoundary(bytes),
+      ));
+
+  List<PcmSegment> finish() => _segmenter.finish();
+}
+
 final class PcmWavWriter {
   static Future<File> write({
     required File file,

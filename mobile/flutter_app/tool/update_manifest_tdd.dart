@@ -1,4 +1,4 @@
-import '../lib/update/update_manifest.dart';
+import 'package:softerplease/update/update_manifest.dart';
 
 void main() {
   final manifest = UpdateManifest.fromJson({

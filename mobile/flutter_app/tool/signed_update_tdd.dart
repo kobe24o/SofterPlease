@@ -1,7 +1,7 @@
 import 'dart:convert';
 
 import 'package:cryptography/cryptography.dart';
-import '../lib/update/signed_update_feed.dart';
+import 'package:softerplease/update/signed_update_feed.dart';
 
 Future<void> main() async {
   final algorithm = Ed25519();
